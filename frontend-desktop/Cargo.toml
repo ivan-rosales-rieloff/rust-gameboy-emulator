@@ -1,0 +1,8 @@
+[package]
+name = "frontend-desktop"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+core-gb = { path = "../core-gb" }
+minifb = "0.27"

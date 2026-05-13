@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "core-common",
+    "core-gb",
+    "core-gba",
+    "frontend-desktop",
+]
+resolver = "2"

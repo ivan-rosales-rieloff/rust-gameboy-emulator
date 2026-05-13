@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::fs;
 
 const MIN_ROM_SIZE: usize = 0x8000;
 const TITLE_START: usize = 0x0134;
@@ -12,6 +13,8 @@ const MAX_MBC1_RAM_BANKS: usize = 4;
 enum CartridgeKind {
     RomOnly,
     Mbc1,
+    Mbc1Ram,
+    Mbc1RamBattery,
 }
 
 #[derive(Debug, Clone)]
@@ -24,6 +27,7 @@ pub struct Cartridge {
     ram_bank: u8,
     banking_mode: u8,
     ram_enabled: bool,
+    has_battery: bool,
 }
 
 impl Cartridge {
@@ -36,9 +40,11 @@ impl Cartridge {
         }
 
         let cartridge_type = rom[CARTRIDGE_TYPE_ADDRESS];
-        let kind = match cartridge_type {
-            0x00 => CartridgeKind::RomOnly,
-            0x01 | 0x02 | 0x03 => CartridgeKind::Mbc1,
+        let (kind, has_battery) = match cartridge_type {
+            0x00 => (CartridgeKind::RomOnly, false),
+            0x01 => (CartridgeKind::Mbc1, false),
+            0x02 => (CartridgeKind::Mbc1Ram, false),
+            0x03 => (CartridgeKind::Mbc1RamBattery, true),
             _ => return Err(CartridgeError::UnsupportedCartridgeType(cartridge_type)),
         };
 
@@ -56,25 +62,34 @@ impl Cartridge {
 
         let ram_size = match kind {
             CartridgeKind::RomOnly => 0,
-            CartridgeKind::Mbc1 => RAM_BANK_SIZE * MAX_MBC1_RAM_BANKS,
+            CartridgeKind::Mbc1 => 0,
+            CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery => RAM_BANK_SIZE * MAX_MBC1_RAM_BANKS,
         };
 
-        Ok(Self {
+        let mut cartridge = Self {
             rom,
-            title,
+            title: title.clone(),
             kind,
             ram: vec![0; ram_size],
             rom_bank: 1,
             ram_bank: 0,
             banking_mode: 0,
             ram_enabled: false,
-        })
+            has_battery,
+        };
+
+        // Load save file if battery-backed RAM is supported
+        if has_battery {
+            cartridge.load_save_file();
+        }
+
+        Ok(cartridge)
     }
 
     fn current_rom_bank(&self) -> u8 {
         match self.kind {
             CartridgeKind::RomOnly => 1,
-            CartridgeKind::Mbc1 => {
+            CartridgeKind::Mbc1 | CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery => {
                 let mut bank = self.rom_bank & 0x1F;
                 if bank == 0 {
                     bank = 1;
@@ -92,7 +107,7 @@ impl Cartridge {
     fn current_ram_bank(&self) -> u8 {
         match self.kind {
             CartridgeKind::RomOnly => 0,
-            CartridgeKind::Mbc1 => {
+            CartridgeKind::Mbc1 | CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery => {
                 if self.banking_mode == 0 {
                     0
                 } else {
@@ -105,7 +120,7 @@ impl Cartridge {
     pub fn read_rom(&self, address: u16) -> u8 {
         match self.kind {
             CartridgeKind::RomOnly => self.rom.get(usize::from(address)).copied().unwrap_or(0xFF),
-            CartridgeKind::Mbc1 => match address {
+            CartridgeKind::Mbc1 | CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery => match address {
                 0x0000..=0x3FFF => self.rom.get(usize::from(address)).copied().unwrap_or(0xFF),
                 0x4000..=0x7FFF => {
                     let bank = self.current_rom_bank();
@@ -118,46 +133,58 @@ impl Cartridge {
     }
 
     pub fn write_rom(&mut self, address: u16, value: u8) {
-        if let CartridgeKind::Mbc1 = self.kind {
-            match address {
-                0x0000..=0x1FFF => {
-                    self.ram_enabled = (value & 0x0F) == 0x0A;
+        match self.kind {
+            CartridgeKind::Mbc1 | CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery => {
+                match address {
+                    0x0000..=0x1FFF => {
+                        self.ram_enabled = (value & 0x0F) == 0x0A;
+                    }
+                    0x2000..=0x3FFF => {
+                        let bank = value & 0x1F;
+                        self.rom_bank = if bank == 0 { 1 } else { bank };
+                    }
+                    0x4000..=0x5FFF => {
+                        self.ram_bank = value & 0x03;
+                    }
+                    0x6000..=0x7FFF => {
+                        self.banking_mode = value & 0x01;
+                    }
+                    _ => {}
                 }
-                0x2000..=0x3FFF => {
-                    let bank = value & 0x1F;
-                    self.rom_bank = if bank == 0 { 1 } else { bank };
-                }
-                0x4000..=0x5FFF => {
-                    self.ram_bank = value & 0x03;
-                }
-                0x6000..=0x7FFF => {
-                    self.banking_mode = value & 0x01;
-                }
-                _ => {}
             }
+            CartridgeKind::RomOnly => {}
         }
     }
 
     pub fn read_ram(&self, address: u16) -> u8 {
-        if let CartridgeKind::Mbc1 = self.kind {
-            let bank = self.current_ram_bank();
-            let offset = usize::from(bank) * RAM_BANK_SIZE + usize::from(address - 0xA000);
-            self.ram.get(offset).copied().unwrap_or(0xFF)
-        } else {
-            0xFF
+        match self.kind {
+            CartridgeKind::RomOnly => 0xFF,
+            CartridgeKind::Mbc1 => 0xFF,
+            CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery => {
+                if !self.ram_enabled {
+                    return 0xFF;
+                }
+                let bank = self.current_ram_bank();
+                let offset = usize::from(bank) * RAM_BANK_SIZE + usize::from(address - 0xA000);
+                self.ram.get(offset).copied().unwrap_or(0xFF)
+            }
         }
     }
 
     pub fn write_ram(&mut self, address: u16, value: u8) {
-        if let CartridgeKind::Mbc1 = self.kind {
-            if !self.ram_enabled {
-                return;
-            }
+        match self.kind {
+            CartridgeKind::RomOnly => {}
+            CartridgeKind::Mbc1 => {}
+            CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery => {
+                if !self.ram_enabled {
+                    return;
+                }
 
-            let bank = self.current_ram_bank();
-            let offset = usize::from(bank) * RAM_BANK_SIZE + usize::from(address - 0xA000);
-            if let Some(slot) = self.ram.get_mut(offset) {
-                *slot = value;
+                let bank = self.current_ram_bank();
+                let offset = usize::from(bank) * RAM_BANK_SIZE + usize::from(address - 0xA000);
+                if let Some(slot) = self.ram.get_mut(offset) {
+                    *slot = value;
+                }
             }
         }
     }
@@ -165,12 +192,44 @@ impl Cartridge {
     pub fn title(&self) -> &str {
         &self.title
     }
+
+    pub fn has_battery(&self) -> bool {
+        self.has_battery
+    }
+
+    pub fn save_game(&self) -> Result<(), CartridgeError> {
+        if !self.has_battery || self.ram.is_empty() {
+            return Ok(());
+        }
+
+        let save_path = format!("{}.sav", self.title);
+        fs::write(&save_path, &self.ram)
+            .map_err(|e| CartridgeError::SaveError {
+                path: save_path,
+                error: e.to_string(),
+            })
+    }
+
+    fn load_save_file(&mut self) {
+        if !self.has_battery || self.ram.is_empty() {
+            return;
+        }
+
+        let save_path = format!("{}.sav", self.title);
+        if let Ok(save_data) = fs::read(&save_path) {
+            // Only load if the save file size matches our RAM size
+            if save_data.len() == self.ram.len() {
+                self.ram.copy_from_slice(&save_data);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CartridgeError {
     RomTooSmall { found: usize, minimum: usize },
     UnsupportedCartridgeType(u8),
+    SaveError { path: String, error: String },
 }
 
 impl Display for CartridgeError {
@@ -187,6 +246,9 @@ impl Display for CartridgeError {
                     f,
                     "unsupported cartridge type 0x{value:02X} (ROM-only and MBC1 are supported)"
                 )
+            }
+            Self::SaveError { path, error } => {
+                write!(f, "failed to save game to '{}': {}", path, error)
             }
         }
     }

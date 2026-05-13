@@ -73,6 +73,15 @@ impl GameBoy {
     pub fn set_button_state(&mut self, buttons: u8) {
         self.bus.set_button_state(buttons);
     }
+
+    pub fn save_game(&self) -> Result<(), GameBoyError> {
+        self.bus.cartridge().save_game()?;
+        Ok(())
+    }
+
+    pub fn has_battery(&self) -> bool {
+        self.bus.cartridge().has_battery()
+    }
 }
 
 impl HeadlessCore for GameBoy {
@@ -209,6 +218,26 @@ mod tests {
         assert_eq!(stats.instructions, 4);
         assert!(stats.halted);
         assert_eq!(game_boy.registers().a, bank1_data);
+    }
+
+    #[test]
+    fn supports_battery_backed_cartridge_detection() {
+        // Test MBC1+RAM+Battery cartridge type 0x03
+        let rom = make_rom(&[0x00], 0x03, "BATTERYTEST");
+        let game_boy = GameBoy::from_rom_bytes(rom).unwrap();
+
+        assert!(game_boy.has_battery());
+        assert_eq!(game_boy.title(), "BATTERYTEST");
+    }
+
+    #[test]
+    fn supports_non_battery_cartridge_detection() {
+        // Test MBC1 cartridge type 0x01 (no battery)
+        let rom = make_rom(&[0x00], 0x01, "NOBATTERY");
+        let game_boy = GameBoy::from_rom_bytes(rom).unwrap();
+
+        assert!(!game_boy.has_battery());
+        assert_eq!(game_boy.title(), "NOBATTERY");
     }
 
     #[test]

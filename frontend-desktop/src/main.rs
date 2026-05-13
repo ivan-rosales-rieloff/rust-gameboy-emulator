@@ -63,6 +63,15 @@ fn main() {
 
         window.update_with_buffer(&buffer, width, height).unwrap();
     }
+
+    // Save game state if cartridge has battery-backed RAM
+    if game_boy.has_battery() {
+        if let Err(error) = game_boy.save_game() {
+            eprintln!("Failed to save game: {error}");
+        } else {
+            println!("Game saved successfully!");
+        }
+    }
 }
 
 fn read_buttons(window: &Window) -> u8 {

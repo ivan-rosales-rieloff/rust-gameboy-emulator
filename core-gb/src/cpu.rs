@@ -4,6 +4,7 @@ use std::fmt::{Display, Formatter};
 use core_common::StepResult;
 
 use crate::bus::Bus;
+use crate::trace::{trace, trace_enabled};
 
 const FLAG_Z: u8 = 0x80;
 const FLAG_N: u8 = 0x40;
@@ -57,6 +58,10 @@ impl Cpu {
         self.registers
     }
 
+    pub fn ime_enabled(&self) -> bool {
+        self.ime
+    }
+
     fn bc(&self) -> u16 {
         u16::from(self.registers.b) << 8 | u16::from(self.registers.c)
     }
@@ -76,6 +81,30 @@ impl Cpu {
 
     fn set_sp(&mut self, value: u16) {
         self.registers.sp = value;
+    }
+
+    fn add_hl(&mut self, value: u16) {
+        let hl = self.hl();
+        let result = hl.wrapping_add(value);
+        let half = (hl & 0x0FFF) + (value & 0x0FFF) > 0x0FFF;
+        let carry = u32::from(hl) + u32::from(value) > 0xFFFF;
+        self.registers.f &= !(FLAG_N | FLAG_H | FLAG_C);
+        self.set_flag(FLAG_H, half);
+        self.set_flag(FLAG_C, carry);
+        self.set_hl(result);
+    }
+
+    fn add_sp_signed(&mut self, offset: i8) {
+        let sp = self.registers.sp;
+        let value = offset as u16;
+        let result = sp.wrapping_add(value);
+        let half = (sp & 0x0F) + (value & 0x0F) > 0x0F;
+        let carry = (sp & 0xFF) + (value & 0xFF) > 0xFF;
+
+        self.registers.f = 0;
+        self.set_flag(FLAG_H, half);
+        self.set_flag(FLAG_C, carry);
+        self.registers.sp = result;
     }
 
     fn set_flag(&mut self, mask: u8, enabled: bool) {
@@ -156,6 +185,28 @@ impl Cpu {
         self.update_flags(result == 0, false, false, false);
     }
 
+    fn adc_a(&mut self, value: u8) {
+        let a = self.registers.a;
+        let carry = (self.registers.f & FLAG_C) != 0;
+        let carry_val = if carry { 1 } else { 0 };
+        let (intermediate, carry1) = a.overflowing_add(value);
+        let (result, carry2) = intermediate.overflowing_add(carry_val);
+        let half = (a & 0x0F) + (value & 0x0F) + carry_val > 0x0F;
+        self.registers.a = result;
+        self.update_flags(result == 0, false, half, carry1 || carry2);
+    }
+
+    fn sbc_a(&mut self, value: u8) {
+        let a = self.registers.a;
+        let carry = (self.registers.f & FLAG_C) != 0;
+        let carry_val = if carry { 1 } else { 0 };
+        let (intermediate, borrow1) = a.overflowing_sub(value);
+        let (result, borrow2) = intermediate.overflowing_sub(carry_val);
+        let half = (a & 0x0F) < ((value & 0x0F) + carry_val);
+        self.registers.a = result;
+        self.update_flags(result == 0, true, half, borrow1 || borrow2);
+    }
+
     fn cp_a(&mut self, value: u8) {
         let a = self.registers.a;
         let (result, borrow) = a.overflowing_sub(value);
@@ -189,24 +240,104 @@ impl Cpu {
         low | (high << 8)
     }
 
+    fn push16(&mut self, value: u16, bus: &mut Bus) {
+        self.registers.sp = self.registers.sp.wrapping_sub(2);
+        bus.write8(self.registers.sp, value as u8);
+        bus.write8(self.registers.sp.wrapping_add(1), (value >> 8) as u8);
+    }
+
+    fn pop16(&mut self, bus: &mut Bus) -> u16 {
+        let low = bus.read8(self.registers.sp);
+        let high = bus.read8(self.registers.sp.wrapping_add(1));
+        self.registers.sp = self.registers.sp.wrapping_add(2);
+        u16::from(low) | (u16::from(high) << 8)
+    }
+
+    fn pending_interrupts(&self, bus: &Bus) -> u8 {
+        let interrupt_enable = bus.read8(0xFFFF);
+        let interrupt_flags = bus.read8(0xFF0F);
+        interrupt_enable & interrupt_flags
+    }
+
+    fn service_interrupt(&mut self, bus: &mut Bus) -> Option<StepResult> {
+        let active = self.pending_interrupts(bus);
+        if active == 0 || !self.ime {
+            return None;
+        }
+
+        let (flag, vector) = if active & 0x01 != 0 {
+            (0x01, 0x40)
+        } else if active & 0x02 != 0 {
+            (0x02, 0x48)
+        } else if active & 0x04 != 0 {
+            (0x04, 0x50)
+        } else if active & 0x08 != 0 {
+            (0x08, 0x58)
+        } else if active & 0x10 != 0 {
+            (0x10, 0x60)
+        } else {
+            return None;
+        };
+
+        self.halted = false;
+        self.ime = false;
+        self.push16(self.registers.pc, bus);
+        let current_if = bus.read8(0xFF0F);
+        bus.write8(0xFF0F, current_if & !flag);
+        self.registers.pc = vector;
+        Some(StepResult::new(20, false))
+    }
+
     pub fn step(&mut self, bus: &mut Bus) -> Result<StepResult, CpuError> {
+        if let Some(interrupt_step) = self.service_interrupt(bus) {
+            return Ok(interrupt_step);
+        }
+
         if self.halted {
-            return Ok(StepResult::new(4, true));
+            if self.pending_interrupts(bus) != 0 {
+                self.halted = false;
+            } else {
+                return Ok(StepResult::new(4, true));
+            }
         }
 
         let instruction_address = self.registers.pc;
         let opcode = self.fetch8(bus);
 
+        if trace_enabled() {
+            // Log key Pokemon Red code regions and joypad interaction candidates.
+            if instruction_address == 0x614F
+                || instruction_address == 0x28CE
+                || instruction_address == 0x28CB
+                || instruction_address == 0x2061
+                || instruction_address == 0x1F84
+                || instruction_address == 0x1F8E
+            {
+                trace(&format!(
+                    "CPU trace: PC=0x{instruction_address:04X} opcode=0x{opcode:02X} A=0x{a:02X} F=0x{f:02X} B=0x{b:02X} C=0x{c:02X} D=0x{d:02X} E=0x{e:02X} H=0x{h:02X} L=0x{l:02X} SP=0x{sp:04X}",
+                    a = self.registers.a,
+                    f = self.registers.f,
+                    b = self.registers.b,
+                    c = self.registers.c,
+                    d = self.registers.d,
+                    e = self.registers.e,
+                    h = self.registers.h,
+                    l = self.registers.l,
+                    sp = self.registers.sp,
+                ));
+            }
+        }
+
         let step_result = match opcode {
             0x00 => StepResult::new(4, false),
-            0x04..=0x0F if opcode & 0x07 == 0x04 => {
+            0x04..=0x3C if opcode & 0x07 == 0x04 => {
                 let reg = (opcode >> 3) & 0x07;
                 let value = self.read_reg8(reg, bus);
                 let updated = self.inc8(value);
                 self.write_reg8(reg, updated, bus);
                 StepResult::new(if reg == 6 { 12 } else { 4 }, false)
             }
-            0x05..=0x0F if opcode & 0x07 == 0x05 => {
+            0x05..=0x3D if opcode & 0x07 == 0x05 => {
                 let reg = (opcode >> 3) & 0x07;
                 let value = self.read_reg8(reg, bus);
                 let updated = self.dec8(value);
@@ -241,9 +372,59 @@ impl Cpu {
                 self.registers.a = self.fetch8(bus);
                 StepResult::new(8, false)
             }
+            0x27 => {
+                // DAA
+                let a = self.registers.a;
+                let mut adjust = 0;
+                let mut carry = self.registers.f & FLAG_C != 0;
+                if self.registers.f & FLAG_H != 0 || (a & 0x0F) > 9 {
+                    adjust |= 0x06;
+                }
+                if carry || a > 0x99 {
+                    adjust |= 0x60;
+                    carry = true;
+                }
+                let result = if self.registers.f & FLAG_N != 0 {
+                    a.wrapping_sub(adjust)
+                } else {
+                    a.wrapping_add(adjust)
+                };
+                self.registers.a = result;
+                self.set_flag(FLAG_Z, result == 0);
+                self.set_flag(FLAG_H, false);
+                self.set_flag(FLAG_C, carry);
+                StepResult::new(4, false)
+            }
+            0x2F => {
+                // CPL
+                self.registers.a = !self.registers.a;
+                self.set_flag(FLAG_N, true);
+                self.set_flag(FLAG_H, true);
+                StepResult::new(4, false)
+            }
             0x3C => {
                 // INC A
                 self.registers.a = self.inc8(self.registers.a);
+                StepResult::new(4, false)
+            }
+            0x07 => {
+                // RLCA
+                let carry = self.registers.a & 0x80 != 0;
+                self.registers.a = self.registers.a.rotate_left(1);
+                self.set_flag(FLAG_Z, false);
+                self.set_flag(FLAG_N, false);
+                self.set_flag(FLAG_H, false);
+                self.set_flag(FLAG_C, carry);
+                StepResult::new(4, false)
+            }
+            0x0F => {
+                // RRCA
+                let carry = self.registers.a & 0x01 != 0;
+                self.registers.a = self.registers.a.rotate_right(1);
+                self.set_flag(FLAG_Z, false);
+                self.set_flag(FLAG_N, false);
+                self.set_flag(FLAG_H, false);
+                self.set_flag(FLAG_C, carry);
                 StepResult::new(4, false)
             }
             0x02 => {
@@ -326,10 +507,52 @@ impl Cpu {
                 self.registers.sp = self.registers.sp.wrapping_add(1);
                 StepResult::new(8, false)
             }
+            0x09 => {
+                self.add_hl(self.bc());
+                StepResult::new(8, false)
+            }
+            0x19 => {
+                self.add_hl(self.de());
+                StepResult::new(8, false)
+            }
+            0x29 => {
+                self.add_hl(self.hl());
+                StepResult::new(8, false)
+            }
+            0x39 => {
+                self.add_hl(self.registers.sp);
+                StepResult::new(8, false)
+            }
             0x31 => {
                 let value = self.fetch16(bus);
                 self.set_sp(value);
                 StepResult::new(12, false)
+            }
+            0xE8 => {
+                let offset = self.fetch8(bus) as i8;
+                self.add_sp_signed(offset);
+                StepResult::new(16, false)
+            }
+            0xF8 => {
+                let offset = self.fetch8(bus) as i8;
+                let sp = self.registers.sp;
+                let value = offset as u16;
+                let result = sp.wrapping_add(value);
+                let half = (sp & 0x0F) + (value & 0x0F) > 0x0F;
+                let carry = (sp & 0xFF) + (value & 0xFF) > 0xFF;
+                self.registers.f = 0;
+                self.set_flag(FLAG_H, half);
+                self.set_flag(FLAG_C, carry);
+                self.set_hl(result);
+                StepResult::new(12, false)
+            }
+            0xF9 => {
+                self.registers.sp = self.hl();
+                StepResult::new(8, false)
+            }
+            0xE9 => {
+                self.registers.pc = self.hl();
+                StepResult::new(4, false)
             }
             0x0B => {
                 // DEC BC
@@ -372,9 +595,19 @@ impl Cpu {
                 self.add_a(value);
                 StepResult::new(4, false)
             }
+            0x88..=0x8F => {
+                let value = self.read_reg8(opcode & 0x07, bus);
+                self.adc_a(value);
+                StepResult::new(4, false)
+            }
             0x90..=0x97 => {
                 let value = self.read_reg8(opcode & 0x07, bus);
                 self.sub_a(value);
+                StepResult::new(4, false)
+            }
+            0x98..=0x9F => {
+                let value = self.read_reg8(opcode & 0x07, bus);
+                self.sbc_a(value);
                 StepResult::new(4, false)
             }
             0xA0..=0xA7 => {
@@ -447,6 +680,47 @@ impl Cpu {
                 self.registers.pc = address;
                 StepResult::new(16, false)
             }
+            0xC5 => {
+                self.push16(self.bc(), bus);
+                StepResult::new(16, false)
+            }
+            0xD5 => {
+                self.push16(self.de(), bus);
+                StepResult::new(16, false)
+            }
+            0xE5 => {
+                self.push16(self.hl(), bus);
+                StepResult::new(16, false)
+            }
+            0xF5 => {
+                let value = u16::from(self.registers.a) << 8 | u16::from(self.registers.f & 0xF0);
+                self.push16(value, bus);
+                StepResult::new(16, false)
+            }
+            0xC1 => {
+                let value = self.pop16(bus);
+                self.registers.b = (value >> 8) as u8;
+                self.registers.c = value as u8;
+                StepResult::new(12, false)
+            }
+            0xD1 => {
+                let value = self.pop16(bus);
+                self.registers.d = (value >> 8) as u8;
+                self.registers.e = value as u8;
+                StepResult::new(12, false)
+            }
+            0xE1 => {
+                let value = self.pop16(bus);
+                self.registers.h = (value >> 8) as u8;
+                self.registers.l = value as u8;
+                StepResult::new(12, false)
+            }
+            0xF1 => {
+                let value = self.pop16(bus);
+                self.registers.a = (value >> 8) as u8;
+                self.registers.f = (value as u8) & 0xF0;
+                StepResult::new(12, false)
+            }
             0xC2 => {
                 // JP NZ - Jump if not zero
                 let address = self.fetch16(bus);
@@ -483,6 +757,58 @@ impl Cpu {
                 if self.registers.f & FLAG_C != 0 {
                     self.registers.pc = address;
                     StepResult::new(16, false)
+                } else {
+                    StepResult::new(12, false)
+                }
+            }
+            0xC4 => {
+                let address = self.fetch16(bus);
+                if self.registers.f & FLAG_Z == 0 {
+                    let return_address = self.registers.pc;
+                    self.registers.sp = self.registers.sp.wrapping_sub(2);
+                    bus.write8(self.registers.sp, (return_address & 0xFF) as u8);
+                    bus.write8(self.registers.sp.wrapping_add(1), (return_address >> 8) as u8);
+                    self.registers.pc = address;
+                    StepResult::new(24, false)
+                } else {
+                    StepResult::new(12, false)
+                }
+            }
+            0xCC => {
+                let address = self.fetch16(bus);
+                if self.registers.f & FLAG_Z != 0 {
+                    let return_address = self.registers.pc;
+                    self.registers.sp = self.registers.sp.wrapping_sub(2);
+                    bus.write8(self.registers.sp, (return_address & 0xFF) as u8);
+                    bus.write8(self.registers.sp.wrapping_add(1), (return_address >> 8) as u8);
+                    self.registers.pc = address;
+                    StepResult::new(24, false)
+                } else {
+                    StepResult::new(12, false)
+                }
+            }
+            0xD4 => {
+                let address = self.fetch16(bus);
+                if self.registers.f & FLAG_C == 0 {
+                    let return_address = self.registers.pc;
+                    self.registers.sp = self.registers.sp.wrapping_sub(2);
+                    bus.write8(self.registers.sp, (return_address & 0xFF) as u8);
+                    bus.write8(self.registers.sp.wrapping_add(1), (return_address >> 8) as u8);
+                    self.registers.pc = address;
+                    StepResult::new(24, false)
+                } else {
+                    StepResult::new(12, false)
+                }
+            }
+            0xDC => {
+                let address = self.fetch16(bus);
+                if self.registers.f & FLAG_C != 0 {
+                    let return_address = self.registers.pc;
+                    self.registers.sp = self.registers.sp.wrapping_sub(2);
+                    bus.write8(self.registers.sp, (return_address & 0xFF) as u8);
+                    bus.write8(self.registers.sp.wrapping_add(1), (return_address >> 8) as u8);
+                    self.registers.pc = address;
+                    StepResult::new(24, false)
                 } else {
                     StepResult::new(12, false)
                 }
@@ -551,6 +877,14 @@ impl Cpu {
                     StepResult::new(8, false)
                 }
             }
+            0xD9 => {
+                let low = bus.read8(self.registers.sp);
+                let high = bus.read8(self.registers.sp.wrapping_add(1));
+                self.registers.sp = self.registers.sp.wrapping_add(2);
+                self.registers.pc = u16::from(low) | (u16::from(high) << 8);
+                self.ime = true;
+                StepResult::new(16, false)
+            }
             0xEA => {
                 let address = self.fetch16(bus);
                 bus.write8(address, self.registers.a);
@@ -567,15 +901,92 @@ impl Cpu {
                 bus.write8(0xFF00 + u16::from(offset), self.registers.a);
                 StepResult::new(12, false)
             }
+            0xE2 => {
+                // LD (C),A - Load A into high RAM at offset C
+                let address = 0xFF00 + u16::from(self.registers.c);
+                bus.write8(address, self.registers.a);
+                StepResult::new(8, false)
+            }
+            0xE6 => {
+                let value = self.fetch8(bus);
+                self.and_a(value);
+                StepResult::new(8, false)
+            }
+            0xEE => {
+                let value = self.fetch8(bus);
+                self.xor_a(value);
+                StepResult::new(8, false)
+            }
             0xF0 => {
                 // LDH A,(n) - Load A from high RAM at offset n
                 let offset = self.fetch8(bus);
                 self.registers.a = bus.read8(0xFF00 + u16::from(offset));
                 StepResult::new(12, false)
             }
+            0xF2 => {
+                // LD A,(C) - Load A from high RAM at offset C
+                self.registers.a = bus.read8(0xFF00 + u16::from(self.registers.c));
+                StepResult::new(8, false)
+            }
             0xF3 => {
                 // DI - Disable Interrupts
                 self.ime = false;
+                StepResult::new(4, false)
+            }
+            0x36 => {
+                let value = self.fetch8(bus);
+                bus.write8(self.hl(), value);
+                StepResult::new(12, false)
+            }
+            0xC6 => {
+                let value = self.fetch8(bus);
+                self.add_a(value);
+                StepResult::new(8, false)
+            }
+            0xCE => {
+                let value = self.fetch8(bus);
+                let carry = self.registers.f & FLAG_C != 0;
+                let carry_val = if carry { 1 } else { 0 };
+                let a = self.registers.a;
+                let (intermediate, carry1) = a.overflowing_add(value);
+                let (result, carry2) = intermediate.overflowing_add(carry_val);
+                let half = (a & 0x0F) + (value & 0x0F) + carry_val > 0x0F;
+                self.registers.a = result;
+                self.update_flags(result == 0, false, half, carry1 || carry2);
+                StepResult::new(8, false)
+            }
+            0xD6 => {
+                let value = self.fetch8(bus);
+                self.sub_a(value);
+                StepResult::new(8, false)
+            }
+            0xDE => {
+                let value = self.fetch8(bus);
+                self.sbc_a(value);
+                StepResult::new(8, false)
+            }
+            0xF6 => {
+                let value = self.fetch8(bus);
+                self.or_a(value);
+                StepResult::new(8, false)
+            }
+            0xFE => {
+                let value = self.fetch8(bus);
+                self.cp_a(value);
+                StepResult::new(8, false)
+            }
+            0x37 => {
+                // SCF
+                self.set_flag(FLAG_N, false);
+                self.set_flag(FLAG_H, false);
+                self.set_flag(FLAG_C, true);
+                StepResult::new(4, false)
+            }
+            0x3F => {
+                // CCF
+                self.set_flag(FLAG_N, false);
+                self.set_flag(FLAG_H, false);
+                self.set_flag(FLAG_C, self.registers.f & FLAG_C == 0);
                 StepResult::new(4, false)
             }
             0xFB => {

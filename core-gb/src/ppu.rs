@@ -1,13 +1,14 @@
 use crate::bus::Bus;
+use crate::trace::{trace, trace_enabled};
 
 pub const SCREEN_WIDTH: usize = 160;
 pub const SCREEN_HEIGHT: usize = 144;
-const FRAME_CYCLES: u32 = 70224;
 
 #[derive(Debug, Clone)]
 pub struct Ppu {
     pub framebuffer: [u8; SCREEN_WIDTH * SCREEN_HEIGHT],
     cycle_counter: u32,
+    scanline: u8,
     frame_counter: u32,
 }
 
@@ -16,22 +17,52 @@ impl Default for Ppu {
         Self {
             framebuffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT],
             cycle_counter: 0,
+            scanline: 0,
             frame_counter: 0,
         }
     }
 }
 
 impl Ppu {
-    pub fn step(&mut self, cycles: u32, bus: &Bus) -> bool {
+    pub fn step(&mut self, cycles: u32, bus: &mut Bus) -> bool {
         self.cycle_counter = self.cycle_counter.wrapping_add(cycles);
-        if self.cycle_counter >= FRAME_CYCLES {
-            self.cycle_counter -= FRAME_CYCLES;
-            self.frame_counter = self.frame_counter.wrapping_add(1);
-            self.render_frame(bus);
-            true
-        } else {
-            false
+
+        const SCANLINE_CYCLES: u32 = 456;
+        const TOTAL_SCANLINES: u8 = 154;
+
+        let mut frame_completed = false;
+        while self.cycle_counter >= SCANLINE_CYCLES {
+            self.cycle_counter -= SCANLINE_CYCLES;
+            self.scanline = self.scanline.wrapping_add(1);
+            if self.scanline == 144 {
+                let interrupt_flags = bus.read8(0xFF0F);
+                bus.write8(0xFF0F, interrupt_flags | 0x01);
+            }
+            if self.scanline >= TOTAL_SCANLINES {
+                self.scanline = 0;
+                self.frame_counter = self.frame_counter.wrapping_add(1);
+                self.render_frame(bus);
+                frame_completed = true;
+                if trace_enabled() {
+                    let lcdc = bus.read8(0xFF40);
+                    let palette = bus.read8(0xFF47);
+                    let min_pixel = self.framebuffer.iter().copied().min().unwrap_or(0);
+                    let max_pixel = self.framebuffer.iter().copied().max().unwrap_or(0);
+                    trace(&format!(
+                        "PPU frame: count={} scanline={} LCDC=0x{lcdc:02X} BGP=0x{palette:02X} min_pixel={min_pixel} max_pixel={max_pixel}",
+                        self.frame_counter,
+                        self.scanline,
+                        lcdc = lcdc,
+                        palette = palette,
+                        min_pixel = min_pixel,
+                        max_pixel = max_pixel,
+                    ));
+                }
+            }
+            bus.write8(0xFF44, self.scanline);
         }
+
+        frame_completed
     }
 
     pub fn framebuffer(&self) -> &[u8; SCREEN_WIDTH * SCREEN_HEIGHT] {

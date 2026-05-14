@@ -15,6 +15,8 @@ enum CartridgeKind {
     Mbc1,
     Mbc1Ram,
     Mbc1RamBattery,
+    Mbc3Ram,
+    Mbc3RamBattery,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +47,9 @@ impl Cartridge {
             0x01 => (CartridgeKind::Mbc1, false),
             0x02 => (CartridgeKind::Mbc1Ram, false),
             0x03 => (CartridgeKind::Mbc1RamBattery, true),
+            0x11 => (CartridgeKind::Mbc3Ram, false),
+            0x12 => (CartridgeKind::Mbc3Ram, false),
+            0x13 => (CartridgeKind::Mbc3RamBattery, true),
             _ => return Err(CartridgeError::UnsupportedCartridgeType(cartridge_type)),
         };
 
@@ -64,6 +69,7 @@ impl Cartridge {
             CartridgeKind::RomOnly => 0,
             CartridgeKind::Mbc1 => 0,
             CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery => RAM_BANK_SIZE * MAX_MBC1_RAM_BANKS,
+            CartridgeKind::Mbc3Ram | CartridgeKind::Mbc3RamBattery => RAM_BANK_SIZE * MAX_MBC1_RAM_BANKS,
         };
 
         let mut cartridge = Self {
@@ -101,6 +107,13 @@ impl Cartridge {
 
                 bank
             }
+            CartridgeKind::Mbc3Ram | CartridgeKind::Mbc3RamBattery => {
+                let mut bank = self.rom_bank & 0x7F;
+                if bank == 0 {
+                    bank = 1;
+                }
+                bank
+            }
         }
     }
 
@@ -114,13 +127,15 @@ impl Cartridge {
                     self.ram_bank & 0x03
                 }
             }
+            CartridgeKind::Mbc3Ram | CartridgeKind::Mbc3RamBattery => self.ram_bank & 0x03,
         }
     }
 
     pub fn read_rom(&self, address: u16) -> u8 {
         match self.kind {
             CartridgeKind::RomOnly => self.rom.get(usize::from(address)).copied().unwrap_or(0xFF),
-            CartridgeKind::Mbc1 | CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery => match address {
+            CartridgeKind::Mbc1 | CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery
+            | CartridgeKind::Mbc3Ram | CartridgeKind::Mbc3RamBattery => match address {
                 0x0000..=0x3FFF => self.rom.get(usize::from(address)).copied().unwrap_or(0xFF),
                 0x4000..=0x7FFF => {
                     let bank = self.current_rom_bank();
@@ -152,15 +167,33 @@ impl Cartridge {
                     _ => {}
                 }
             }
+            CartridgeKind::Mbc3Ram | CartridgeKind::Mbc3RamBattery => {
+                match address {
+                    0x0000..=0x1FFF => {
+                        self.ram_enabled = (value & 0x0F) == 0x0A;
+                    }
+                    0x2000..=0x3FFF => {
+                        let bank = value & 0x7F;
+                        self.rom_bank = if bank == 0 { 1 } else { bank };
+                    }
+                    0x4000..=0x5FFF => {
+                        self.ram_bank = value & 0x03;
+                    }
+                    0x6000..=0x7FFF => {
+                        // MBC3 latch clock data; unimplemented RTC support.
+                    }
+                    _ => {}
+                }
+            }
             CartridgeKind::RomOnly => {}
         }
     }
 
     pub fn read_ram(&self, address: u16) -> u8 {
         match self.kind {
-            CartridgeKind::RomOnly => 0xFF,
-            CartridgeKind::Mbc1 => 0xFF,
-            CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery => {
+            CartridgeKind::RomOnly | CartridgeKind::Mbc1 => 0xFF,
+            CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery
+            | CartridgeKind::Mbc3Ram | CartridgeKind::Mbc3RamBattery => {
                 if !self.ram_enabled {
                     return 0xFF;
                 }
@@ -173,9 +206,9 @@ impl Cartridge {
 
     pub fn write_ram(&mut self, address: u16, value: u8) {
         match self.kind {
-            CartridgeKind::RomOnly => {}
-            CartridgeKind::Mbc1 => {}
-            CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery => {
+            CartridgeKind::RomOnly | CartridgeKind::Mbc1 => {}
+            CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery
+            | CartridgeKind::Mbc3Ram | CartridgeKind::Mbc3RamBattery => {
                 if !self.ram_enabled {
                     return;
                 }
@@ -244,7 +277,7 @@ impl Display for CartridgeError {
             Self::UnsupportedCartridgeType(value) => {
                 write!(
                     f,
-                    "unsupported cartridge type 0x{value:02X} (ROM-only and MBC1 are supported)"
+                    "unsupported cartridge type 0x{value:02X} (ROM-only, MBC1, and MBC3 are supported)"
                 )
             }
             Self::SaveError { path, error } => {

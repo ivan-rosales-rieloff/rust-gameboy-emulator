@@ -2,6 +2,7 @@ mod bus;
 mod cartridge;
 mod cpu;
 mod ppu;
+mod trace;
 
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -64,7 +65,7 @@ impl GameBoy {
     pub fn run_frame(&mut self) -> Result<(), GameBoyError> {
         loop {
             let step_result = self.step()?;
-            if self.ppu.step(step_result.cycles, &self.bus) {
+            if self.ppu.step(step_result.cycles, &mut self.bus) {
                 return Ok(());
             }
         }
@@ -81,6 +82,10 @@ impl GameBoy {
 
     pub fn has_battery(&self) -> bool {
         self.bus.cartridge().has_battery()
+    }
+
+    pub fn ime_enabled(&self) -> bool {
+        self.cpu.ime_enabled()
     }
 }
 
@@ -154,12 +159,12 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_cartridge_type() {
-        let rom = make_rom(&[0x00], 0x12, "BADTYPE");
+        let rom = make_rom(&[0x00], 0x10, "BADTYPE");
         let error = GameBoy::from_rom_bytes(rom).unwrap_err();
 
         match error {
             GameBoyError::Cartridge(CartridgeError::UnsupportedCartridgeType(value)) => {
-                assert_eq!(value, 0x12);
+                assert_eq!(value, 0x10);
             }
             _ => panic!("expected unsupported cartridge type error"),
         }
@@ -231,6 +236,59 @@ mod tests {
     }
 
     #[test]
+    fn supports_mbc3_ram_battery_cartridge_detection() {
+        // Test MBC3+RAM+Battery cartridge type 0x13
+        let rom = make_rom(&[0x00], 0x13, "POKEMONRED");
+        let game_boy = GameBoy::from_rom_bytes(rom).unwrap();
+
+        assert!(game_boy.has_battery());
+        assert_eq!(game_boy.title(), "POKEMONRED");
+    }
+
+    #[test]
+    fn debug_pokemon_red_lcdc_initialization() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../PokemonRed.gb");
+        let rom = std::fs::read(&path).unwrap();
+        let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
+
+        for frame in 0..5 {
+            game_boy.run_frame().unwrap();
+            let lcdc = game_boy.bus.read8(0xFF40);
+            let scroll_y = game_boy.bus.read8(0xFF42);
+            let scroll_x = game_boy.bus.read8(0xFF43);
+            let palette = game_boy.bus.read8(0xFF47);
+            let framebuffer = game_boy.framebuffer();
+            let min = *framebuffer.iter().min().unwrap();
+            let max = *framebuffer.iter().max().unwrap();
+            println!("frame={} pc=0x{:04X} lcdc=0x{lcdc:02X} scy=0x{scroll_y:02X} scx=0x{scroll_x:02X} pal=0x{palette:02X} min={} max={}", frame, game_boy.pc(), min, max);
+        }
+    }
+
+    #[test]
+    fn trace_pokemon_red_initial_instructions() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../PokemonRed.gb");
+        let rom = std::fs::read(&path).unwrap();
+        let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
+
+        for _ in 0..50 {
+            let pc = game_boy.pc();
+            let opcode = game_boy.bus.read8(pc);
+            println!("pc=0x{:04X} opcode=0x{:02X}", pc, opcode);
+            match game_boy.cpu.step(&mut game_boy.bus) {
+                Ok(step) => {
+                    println!("  cycles={} halted={}", step.cycles, step.halted);
+                    if step.halted {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    panic!("CPU error: {err}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn supports_non_battery_cartridge_detection() {
         // Test MBC1 cartridge type 0x01 (no battery)
         let rom = make_rom(&[0x00], 0x01, "NOBATTERY");
@@ -258,5 +316,26 @@ mod tests {
         assert_eq!(stats.instructions, 4);
         assert!(stats.halted);
         assert_eq!(game_boy.registers().a, 0x08);
+    }
+
+    #[test]
+    fn supports_cp_immediate_instruction() {
+        let rom = make_rom(
+            &[
+                0x3E, 0x05, // LD A,$05
+                0xFE, 0x05, // CP $05
+                0x76, // HALT
+            ],
+            0x00,
+            "COMPARE",
+        );
+        let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
+        let stats = game_boy.run_steps(3).unwrap();
+
+        assert_eq!(stats.instructions, 3);
+        assert!(stats.halted);
+        assert_eq!(game_boy.registers().f & 0x80, 0x80); // Z flag set
+        assert_eq!(game_boy.registers().f & 0x40, 0x40); // N flag set
+        assert_eq!(game_boy.registers().a, 0x05);
     }
 }

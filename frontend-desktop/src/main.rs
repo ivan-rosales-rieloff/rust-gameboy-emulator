@@ -3,9 +3,10 @@ use std::fs;
 use std::path::PathBuf;
 use std::process;
 
-use core_gb::GameBoy;
+use core_gb::{GameBoy};
 use minifb::{Key, Scale, Window, WindowOptions};
 use rfd::FileDialog;
+
 
 const PALETTE: [u32; 4] = [0xFFFFFFFF, 0xAAAAAAFF, 0x555555FF, 0x000000FF];
 
@@ -141,11 +142,15 @@ fn read_buttons(window: &Window) -> u8 {
         buttons |= BTN_DOWN;
     }
 
-    if buttons != 0 {
+    if buttons != 0 && trace_enabled() {
         eprintln!("[FE TRACE] button state=0x{buttons:02X}");
     }
 
     buttons
+}
+
+fn trace_enabled() -> bool {
+    env::args().any(|arg| arg == "--uitrace"  || std::env::var_os("GB_TRACE").is_some() )
 }
 
 fn render_no_rom_screen(buffer: &mut [u32], width: usize, _height: usize) {

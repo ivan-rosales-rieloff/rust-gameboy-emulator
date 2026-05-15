@@ -141,8 +141,44 @@ impl Bus {
     /// - Tile data at 0x8000, BG map at 0x9800
     /// - Default palettes and scroll positions
     pub fn new(cartridge: Cartridge) -> Self {
-        // Initialize I/O registers with Game Boy defaults
+        // Initialize I/O registers with Game Boy post-boot defaults
         let mut io = [0; IO_SIZE];
+
+        // Joypad input register: all buttons released
+        io[0x00] = 0xFF; // P1/JOYP
+
+        // Serial transfer registers
+        io[0x01] = 0x00; // SB
+        io[0x02] = 0x7E; // SC
+
+        // Timer registers
+        io[0x04] = 0x00; // DIV
+        io[0x05] = 0x00; // TIMA
+        io[0x06] = 0x00; // TMA
+        io[0x07] = 0x00; // TAC
+
+        // Interrupt flags
+        io[0x0F] = 0xE1; // IF
+
+        // Sound registers (boot-final defaults)
+        io[0x10] = 0x80; // NR10
+        io[0x11] = 0xBF; // NR11
+        io[0x12] = 0xF3; // NR12
+        io[0x14] = 0xBF; // NR14
+        io[0x16] = 0x3F; // NR21
+        io[0x17] = 0x00; // NR22
+        io[0x19] = 0xBF; // NR24
+        io[0x1A] = 0x7F; // NR30
+        io[0x1B] = 0xFF; // NR31
+        io[0x1C] = 0x9F; // NR32
+        io[0x1E] = 0xBF; // NR33
+        io[0x20] = 0xFF; // NR41
+        io[0x21] = 0x00; // NR42
+        io[0x22] = 0x00; // NR43
+        io[0x23] = 0xBF; // NR44
+        io[0x24] = 0x77; // NR50
+        io[0x25] = 0xF3; // NR51
+        io[0x26] = 0xF1; // NR52
 
         // LCD Control Register (LCDC) - enables LCD with standard settings
         io[0x40] = 0x91; // LCD enabled, BG enabled, OBJ enabled, tile data 8000, BG map 9800
@@ -151,6 +187,7 @@ impl Bus {
         io[0x42] = 0x00; // SCY (Scroll Y) - background vertical scroll
         io[0x43] = 0x00; // SCX (Scroll X) - background horizontal scroll
         io[0x44] = 0x00; // LY (LCD Y) - current scanline (read-only, updated by PPU)
+        io[0x45] = 0x00; // LYC (LY Compare)
 
         // Palette registers - default grayscale palettes
         io[0x47] = 0xFC; // BGP (Background Palette) - darkest to lightest gray
@@ -160,6 +197,9 @@ impl Bus {
         // Window position registers
         io[0x4A] = 0x00; // WY (Window Y position)
         io[0x4B] = 0x00; // WX (Window X position)
+
+        // Boot ROM disable register
+        io[0x50] = 0x01; // FF50: boot ROM disabled
 
         Self {
             cartridge,

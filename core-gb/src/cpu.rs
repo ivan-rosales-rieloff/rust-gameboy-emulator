@@ -1,3 +1,79 @@
+//!
+//! # Game Boy CPU (Sharp LR35902)
+//!
+//! This module implements the Game Boy's central processing unit, which is based on
+//! the Sharp LR35902 processor. This CPU is similar to the Intel 8080 and Zilog Z80
+//! but with some differences and simplifications.
+//!
+//! ## CPU Architecture Overview
+//!
+//! The LR35902 has:
+//! - **8-bit data bus**: All operations work with bytes
+//! - **16-bit address bus**: 64KB addressable memory
+//! - **8 registers**: A, F, B, C, D, E, H, L (F is flags register)
+//! - **16-bit registers**: SP (Stack Pointer), PC (Program Counter)
+//! - **Register pairs**: BC, DE, HL (can be used as 16-bit registers)
+//!
+//! ## Registers
+//!
+//! - **A (Accumulator)**: Primary register for arithmetic/logic operations
+//! - **F (Flags)**: Status bits (Zero, Negative, Half-Carry, Carry)
+//! - **B, C, D, E, H, L**: General-purpose registers, often used in pairs
+//! - **SP (Stack Pointer)**: Points to top of stack in memory
+//! - **PC (Program Counter)**: Points to next instruction to execute
+//!
+//! ## Flags Register (F)
+//!
+//! The F register contains four status flags:
+//! - **Z (Zero flag, bit 7)**: Set when result is zero
+//! - **N (Negative flag, bit 6)**: Set for subtraction operations
+//! - **H (Half-Carry flag, bit 5)**: Set when carry from lower nibble (4 bits)
+//! - **C (Carry flag, bit 4)**: Set when operation overflows 8 bits
+//!
+//! ## Instruction Set
+//!
+//! The CPU supports various instruction types:
+//! - **8-bit load/store**: MOV equivalent operations
+//! - **16-bit load/store**: Working with register pairs
+//! - **Arithmetic/Logic**: ADD, SUB, AND, OR, XOR, etc.
+//! - **Control flow**: Jumps, calls, returns
+//! - **Bit operations**: Individual bit manipulation
+//! - **Interrupts**: Hardware interrupt handling
+//!
+//! ## Instruction Encoding
+//!
+//! Instructions are 1-3 bytes:
+//! - **Byte 1**: Opcode (0x00-0xFF)
+//! - **Byte 2-3**: Immediate data (constants, addresses)
+//!
+//! Many opcodes follow patterns:
+//! - Bits 0-2: Source/destination register (0=B, 1=C, 2=D, 3=E, 4=H, 5=L, 6=(HL), 7=A)
+//! - Bits 3-5: Operation type
+//! - Bits 6-7: Instruction group
+//!
+//! ## Timing
+//!
+//! Each instruction takes a specific number of CPU cycles (4MHz clock):
+//! - Simple instructions: 4 cycles
+//! - Memory access: 8-12 cycles
+//! - Control flow: 8-24 cycles
+//!
+//! ## Interrupts
+//!
+//! The CPU supports 5 hardware interrupts:
+//! - VBlank (0x40): Vertical blanking period
+//! - LCD STAT (0x48): LCD status changes
+//! - Timer (0x50): Timer overflow
+//! - Serial (0x58): Serial communication
+//! - Joypad (0x60): Button presses
+//!
+//! ## Rust Implementation Notes
+//!
+//! - Uses pattern matching for opcode decoding (fast and readable)
+//! - Arithmetic operations handle flags correctly for BCD (Binary Coded Decimal)
+//! - Cycle counting ensures accurate timing with PPU synchronization
+//! - Interrupt handling preserves exact Game Boy behavior
+
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -6,107 +82,154 @@ use core_common::StepResult;
 use crate::bus::Bus;
 use crate::trace::{trace, trace_enabled};
 
-const FLAG_Z: u8 = 0x80;
-const FLAG_N: u8 = 0x40;
-const FLAG_H: u8 = 0x20;
-const FLAG_C: u8 = 0x10;
+// Flag bit masks for the F register
+const FLAG_Z: u8 = 0x80; // Zero flag (bit 7)
+const FLAG_N: u8 = 0x40; // Negative flag (bit 6)
+const FLAG_H: u8 = 0x20; // Half-carry flag (bit 5)
+const FLAG_C: u8 = 0x10; // Carry flag (bit 4)
 
+/// CPU register state.
+///
+/// The Game Boy has 8 general-purpose 8-bit registers and 2 special 16-bit registers.
+/// Registers are often used in pairs (BC, DE, HL) for 16-bit operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Registers {
+    /// Accumulator register - primary register for arithmetic operations
     pub a: u8,
+    /// Flags register - contains Z, N, H, C status bits
     pub f: u8,
+    /// General-purpose registers (often used in pairs)
     pub b: u8,
     pub c: u8,
     pub d: u8,
     pub e: u8,
     pub h: u8,
     pub l: u8,
+    /// Stack Pointer - points to top of stack in memory
     pub sp: u16,
+    /// Program Counter - points to next instruction to execute
     pub pc: u16,
 }
 
 impl Default for Registers {
+    /// Default register values after Game Boy boot ROM execution.
+    ///
+    /// These values match what the boot ROM leaves in the registers
+    /// before jumping to the game code at 0x0100.
     fn default() -> Self {
         Self {
-            a: 0x01,
-            f: 0xB0,
-            b: 0x00,
+            a: 0x01,    // Accumulator initialized to 1
+            f: 0xB0,    // Flags: Z=1, N=0, H=1, C=1
+            b: 0x00,    // BC = 0x0013 ( Nintendo logo checksum )
             c: 0x13,
-            d: 0x00,
+            d: 0x00,    // DE = 0x00D8 (more boot values)
             e: 0xD8,
-            h: 0x01,
+            h: 0x01,    // HL = 0x014D (points to Nintendo logo)
             l: 0x4D,
-            sp: 0xFFFE,
-            pc: 0x0100,
+            sp: 0xFFFE, // Stack pointer at top of HRAM
+            pc: 0x0100, // Program counter at game entry point
         }
     }
 }
 
+/// Game Boy CPU emulator.
+///
+/// This struct represents the complete CPU state and implements instruction
+/// execution, interrupt handling, and timing.
 #[derive(Debug, Default)]
 pub struct Cpu {
+    /// Current register values
     registers: Registers,
+    /// CPU halted state (waiting for interrupt)
     halted: bool,
-    ime: bool, // Interrupt Master Enable flag
+    /// Interrupt Master Enable flag - controls interrupt processing
+    ime: bool,
 }
 
 impl Cpu {
+    /// Returns the current program counter value.
     pub fn pc(&self) -> u16 {
         self.registers.pc
     }
 
+    /// Returns a copy of all CPU registers.
     pub fn registers(&self) -> Registers {
         self.registers
     }
 
+    /// Returns true if interrupts are globally enabled.
     pub fn ime_enabled(&self) -> bool {
         self.ime
     }
 
+    /// Gets the 16-bit value of register pair BC.
     fn bc(&self) -> u16 {
         u16::from(self.registers.b) << 8 | u16::from(self.registers.c)
     }
 
+    /// Gets the 16-bit value of register pair DE.
     fn de(&self) -> u16 {
         u16::from(self.registers.d) << 8 | u16::from(self.registers.e)
     }
 
+    /// Gets the 16-bit value of register pair HL.
     fn hl(&self) -> u16 {
         u16::from(self.registers.h) << 8 | u16::from(self.registers.l)
     }
 
+    /// Sets the 16-bit value of register pair HL.
     fn set_hl(&mut self, value: u16) {
         self.registers.h = (value >> 8) as u8;
         self.registers.l = value as u8;
     }
 
+    /// Sets the stack pointer.
     fn set_sp(&mut self, value: u16) {
         self.registers.sp = value;
     }
 
+    /// Adds a 16-bit value to HL and updates flags.
+    ///
+    /// Used for 16-bit arithmetic operations. Only affects H and C flags.
     fn add_hl(&mut self, value: u16) {
         let hl = self.hl();
         let result = hl.wrapping_add(value);
+
+        // Half-carry: carry from bit 11 (lower 12 bits)
         let half = (hl & 0x0FFF) + (value & 0x0FFF) > 0x0FFF;
+        // Carry: overflow from 16 bits
         let carry = u32::from(hl) + u32::from(value) > 0xFFFF;
+
+        // Clear N flag, set H and C flags appropriately
         self.registers.f &= !(FLAG_N | FLAG_H | FLAG_C);
         self.set_flag(FLAG_H, half);
         self.set_flag(FLAG_C, carry);
+
         self.set_hl(result);
     }
 
+    /// Adds a signed 8-bit offset to the stack pointer.
+    ///
+    /// Used for relative stack operations. Updates H and C flags based
+    /// on the lower 8 bits of SP (Game Boy behavior).
     fn add_sp_signed(&mut self, offset: i8) {
         let sp = self.registers.sp;
-        let value = offset as u16;
+        let value = offset as u16; // Sign extension to 16 bits
         let result = sp.wrapping_add(value);
+
+        // Half-carry and carry based on lower 8 bits only
         let half = (sp & 0x0F) + (value & 0x0F) > 0x0F;
         let carry = (sp & 0xFF) + (value & 0xFF) > 0xFF;
 
+        // Clear all flags first
         self.registers.f = 0;
         self.set_flag(FLAG_H, half);
         self.set_flag(FLAG_C, carry);
+
         self.registers.sp = result;
     }
 
+    /// Sets or clears a flag in the F register.
     fn set_flag(&mut self, mask: u8, enabled: bool) {
         if enabled {
             self.registers.f |= mask;
@@ -115,6 +238,9 @@ impl Cpu {
         }
     }
 
+    /// Updates all four flags at once.
+    ///
+    /// Convenience function for operations that affect all flags.
     fn update_flags(&mut self, z: bool, n: bool, h: bool, c: bool) {
         self.registers.f = 0;
         self.set_flag(FLAG_Z, z);
@@ -123,6 +249,10 @@ impl Cpu {
         self.set_flag(FLAG_C, c);
     }
 
+    /// Reads an 8-bit register by its code (0-7).
+    ///
+    /// Register encoding used in many instructions:
+    /// 0=B, 1=C, 2=D, 3=E, 4=H, 5=L, 6=(HL), 7=A
     fn read_reg8(&self, code: u8, bus: &mut Bus) -> u8 {
         match code {
             0 => self.registers.b,
@@ -131,12 +261,13 @@ impl Cpu {
             3 => self.registers.e,
             4 => self.registers.h,
             5 => self.registers.l,
-            6 => bus.read8(self.hl()),
+            6 => bus.read8(self.hl()), // Memory access through HL
             7 => self.registers.a,
-            _ => unreachable!(),
+            _ => unreachable!(), // Invalid register code
         }
     }
 
+    /// Writes an 8-bit value to a register by its code.
     fn write_reg8(&mut self, code: u8, value: u8, bus: &mut Bus) {
         match code {
             0 => self.registers.b = value,
@@ -145,68 +276,100 @@ impl Cpu {
             3 => self.registers.e = value,
             4 => self.registers.h = value,
             5 => self.registers.l = value,
-            6 => bus.write8(self.hl(), value),
+            6 => bus.write8(self.hl(), value), // Memory access through HL
             7 => self.registers.a = value,
-            _ => unreachable!(),
+            _ => unreachable!(), // Invalid register code
         }
     }
 
+    /// Adds a value to the accumulator (register A).
+    ///
+    /// Updates Z, H, C flags. N flag is cleared.
     fn add_a(&mut self, value: u8) {
         let a = self.registers.a;
         let (result, carry) = a.overflowing_add(value);
+        // Half-carry: carry from lower 4 bits
         let half = (a & 0x0F) + (value & 0x0F) > 0x0F;
+
         self.registers.a = result;
         self.update_flags(result == 0, false, half, carry);
     }
 
+    /// Subtracts a value from the accumulator.
+    ///
+    /// Updates Z, H, C flags. N flag is set.
     fn sub_a(&mut self, value: u8) {
         let a = self.registers.a;
         let (result, borrow) = a.overflowing_sub(value);
+        // Half-borrow: borrow from lower 4 bits
         let half = (a & 0x0F) < (value & 0x0F);
+
         self.registers.a = result;
         self.update_flags(result == 0, true, half, borrow);
     }
 
+    /// Logical AND with accumulator.
+    ///
+    /// Sets Z flag, clears N, sets H, clears C.
     fn and_a(&mut self, value: u8) {
         let result = self.registers.a & value;
         self.registers.a = result;
         self.update_flags(result == 0, false, true, false);
     }
 
+    /// Logical XOR with accumulator.
+    ///
+    /// Sets Z flag, clears N, H, C.
     fn xor_a(&mut self, value: u8) {
         let result = self.registers.a ^ value;
         self.registers.a = result;
         self.update_flags(result == 0, false, false, false);
     }
 
+    /// Logical OR with accumulator.
+    ///
+    /// Sets Z flag, clears N, H, C.
     fn or_a(&mut self, value: u8) {
         let result = self.registers.a | value;
         self.registers.a = result;
         self.update_flags(result == 0, false, false, false);
     }
 
+    /// Add with carry to accumulator.
+    ///
+    /// Adds value plus carry flag to A.
     fn adc_a(&mut self, value: u8) {
         let a = self.registers.a;
         let carry = (self.registers.f & FLAG_C) != 0;
         let carry_val = if carry { 1 } else { 0 };
+
         let (intermediate, carry1) = a.overflowing_add(value);
         let (result, carry2) = intermediate.overflowing_add(carry_val);
         let half = (a & 0x0F) + (value & 0x0F) + carry_val > 0x0F;
+
         self.registers.a = result;
         self.update_flags(result == 0, false, half, carry1 || carry2);
     }
 
+    /// Subtract with borrow from accumulator.
+    ///
+    /// Subtracts value plus carry flag from A.
     fn sbc_a(&mut self, value: u8) {
         let a = self.registers.a;
         let carry = (self.registers.f & FLAG_C) != 0;
         let carry_val = if carry { 1 } else { 0 };
+
         let (intermediate, borrow1) = a.overflowing_sub(value);
         let (result, borrow2) = intermediate.overflowing_sub(carry_val);
         let half = (a & 0x0F) < ((value & 0x0F) + carry_val);
+
         self.registers.a = result;
         self.update_flags(result == 0, true, half, borrow1 || borrow2);
     }
 
+    /// Compare accumulator with value (like SUB but doesn't store result).
+    ///
+    /// Updates flags as if subtracting value from A.
     fn cp_a(&mut self, value: u8) {
         let a = self.registers.a;
         let (result, borrow) = a.overflowing_sub(value);
@@ -214,38 +377,54 @@ impl Cpu {
         self.update_flags(result == 0, true, half, borrow);
     }
 
+    /// Increments an 8-bit value and updates flags.
+    ///
+    /// Used for INC instructions. Preserves C flag, sets Z and H.
     fn inc8(&mut self, value: u8) -> u8 {
         let result = value.wrapping_add(1);
-        let half = (value & 0x0F) == 0x0F;
+        let half = (value & 0x0F) == 0x0F; // Carry from lower nibble
         self.update_flags(result == 0, false, half, self.registers.f & FLAG_C != 0);
         result
     }
 
+    /// Decrements an 8-bit value and updates flags.
+    ///
+    /// Used for DEC instructions. Preserves C flag, sets Z and H.
     fn dec8(&mut self, value: u8) -> u8 {
         let result = value.wrapping_sub(1);
-        let half = (value & 0x0F) == 0x00;
+        let half = (value & 0x0F) == 0x00; // Borrow from lower nibble
         self.update_flags(result == 0, true, half, self.registers.f & FLAG_C != 0);
         result
     }
 
+    /// Fetches the next byte from memory and advances PC.
     fn fetch8(&mut self, bus: &mut Bus) -> u8 {
         let byte = bus.read8(self.registers.pc);
         self.registers.pc = self.registers.pc.wrapping_add(1);
         byte
     }
 
+    /// Fetches the next 16-bit word from memory and advances PC.
+    ///
+    /// Game Boy is little-endian: low byte first, then high byte.
     fn fetch16(&mut self, bus: &mut Bus) -> u16 {
         let low = u16::from(self.fetch8(bus));
         let high = u16::from(self.fetch8(bus));
         low | (high << 8)
     }
 
+    /// Pushes a 16-bit value onto the stack.
+    ///
+    /// Stack grows downward in memory. Game Boy is little-endian.
     fn push16(&mut self, value: u16, bus: &mut Bus) {
         self.registers.sp = self.registers.sp.wrapping_sub(2);
-        bus.write8(self.registers.sp, value as u8);
-        bus.write8(self.registers.sp.wrapping_add(1), (value >> 8) as u8);
+        bus.write8(self.registers.sp, value as u8); // Low byte
+        bus.write8(self.registers.sp.wrapping_add(1), (value >> 8) as u8); // High byte
     }
 
+    /// Pops a 16-bit value from the stack.
+    ///
+    /// Game Boy is little-endian: low byte first, then high byte.
     fn pop16(&mut self, bus: &mut Bus) -> u16 {
         let low = bus.read8(self.registers.sp);
         let high = bus.read8(self.registers.sp.wrapping_add(1));
@@ -253,59 +432,92 @@ impl Cpu {
         u16::from(low) | (u16::from(high) << 8)
     }
 
+    /// Checks for pending interrupts that need servicing.
+    ///
+    /// Returns a bitmask of active interrupts (enabled and flagged).
     fn pending_interrupts(&self, bus: &Bus) -> u8 {
-        let interrupt_enable = bus.read8(0xFFFF);
-        let interrupt_flags = bus.read8(0xFF0F);
+        let interrupt_enable = bus.read8(0xFFFF); // IE register
+        let interrupt_flags = bus.read8(0xFF0F);  // IF register
         interrupt_enable & interrupt_flags
     }
 
+    /// Services a pending interrupt if any are active.
+    ///
+    /// Interrupt priority (highest to lowest): VBlank, LCD, Timer, Serial, Joypad.
+    /// When servicing an interrupt:
+    /// 1. Clear IME (disable further interrupts)
+    /// 2. Push PC to stack
+    /// 3. Clear the interrupt flag
+    /// 4. Jump to interrupt vector
     fn service_interrupt(&mut self, bus: &mut Bus) -> Option<StepResult> {
         let active = self.pending_interrupts(bus);
         if active == 0 || !self.ime {
             return None;
         }
 
+        // Find highest priority active interrupt
         let (flag, vector) = if active & 0x01 != 0 {
-            (0x01, 0x40)
+            (0x01, 0x40) // VBlank
         } else if active & 0x02 != 0 {
-            (0x02, 0x48)
+            (0x02, 0x48) // LCD STAT
         } else if active & 0x04 != 0 {
-            (0x04, 0x50)
+            (0x04, 0x50) // Timer
         } else if active & 0x08 != 0 {
-            (0x08, 0x58)
+            (0x08, 0x58) // Serial
         } else if active & 0x10 != 0 {
-            (0x10, 0x60)
+            (0x10, 0x60) // Joypad
         } else {
             return None;
         };
 
-        self.halted = false;
-        self.ime = false;
-        self.push16(self.registers.pc, bus);
+        // Service the interrupt
+        self.halted = false;        // Resume from halt
+        self.ime = false;           // Disable interrupts during handler
+        self.push16(self.registers.pc, bus); // Save return address
+
+        // Clear the interrupt flag
         let current_if = bus.read8(0xFF0F);
         bus.write8(0xFF0F, current_if & !flag);
+
+        // Jump to interrupt handler
         self.registers.pc = vector;
+
+        // Interrupt servicing takes 20 cycles
         Some(StepResult::new(20, false))
     }
 
+    /// Executes a single CPU instruction.
+    ///
+    /// This is the main instruction execution function that:
+    /// 1. Checks for interrupts
+    /// 2. Handles halt state
+    /// 3. Fetches and decodes the next opcode
+    /// 4. Executes the instruction
+    /// 5. Returns timing information
+    ///
+    /// # Returns
+    /// * `StepResult` containing cycles executed and whether CPU was halted
     pub fn step(&mut self, bus: &mut Bus) -> Result<StepResult, CpuError> {
+        // Check for interrupts first (highest priority)
         if let Some(interrupt_step) = self.service_interrupt(bus) {
             return Ok(interrupt_step);
         }
 
+        // Handle halt state (low-power mode waiting for interrupt)
         if self.halted {
             if self.pending_interrupts(bus) != 0 {
-                self.halted = false;
+                self.halted = false; // Wake up on interrupt
             } else {
-                return Ok(StepResult::new(4, true));
+                return Ok(StepResult::new(4, true)); // Continue halted
             }
         }
 
+        // Fetch instruction
         let instruction_address = self.registers.pc;
         let opcode = self.fetch8(bus);
 
+        // Debug tracing for specific Pokemon Red addresses
         if trace_enabled() {
-            // Log key Pokemon Red code regions and joypad interaction candidates.
             if instruction_address == 0x614F
                 || instruction_address == 0x28CE
                 || instruction_address == 0x28CB
@@ -328,15 +540,22 @@ impl Cpu {
             }
         }
 
+        // Decode and execute instruction
+        // This is a large pattern match covering all 256 opcodes
         let step_result = match opcode {
+            // NOP - No operation (4 cycles)
             0x00 => StepResult::new(4, false),
+
+            // INC r - Increment register (4 cycles, 12 for (HL))
             0x04..=0x3C if opcode & 0x07 == 0x04 => {
-                let reg = (opcode >> 3) & 0x07;
+                let reg = (opcode >> 3) & 0x07; // Extract register code
                 let value = self.read_reg8(reg, bus);
                 let updated = self.inc8(value);
                 self.write_reg8(reg, updated, bus);
                 StepResult::new(if reg == 6 { 12 } else { 4 }, false)
             }
+
+            // DEC r - Decrement register (4 cycles, 12 for (HL))
             0x05..=0x3D if opcode & 0x07 == 0x05 => {
                 let reg = (opcode >> 3) & 0x07;
                 let value = self.read_reg8(reg, bus);
@@ -344,6 +563,8 @@ impl Cpu {
                 self.write_reg8(reg, updated, bus);
                 StepResult::new(if reg == 6 { 12 } else { 4 }, false)
             }
+
+            // LD B, n - Load immediate byte into B (8 cycles)
             0x06 => {
                 self.registers.b = self.fetch8(bus);
                 StepResult::new(8, false)

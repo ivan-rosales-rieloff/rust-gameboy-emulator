@@ -37,23 +37,31 @@ impl Ppu {
             if self.scanline == 144 {
                 let interrupt_flags = bus.read8(0xFF0F);
                 bus.write8(0xFF0F, interrupt_flags | 0x01);
+                // Set VBlank flag in STAT register
+                let stat = bus.read8(0xFF41);
+                bus.write8(0xFF41, stat | 0x01); // Bit 0 = VBlank flag
             }
             if self.scanline >= TOTAL_SCANLINES {
                 self.scanline = 0;
                 self.frame_counter = self.frame_counter.wrapping_add(1);
+                // Clear VBlank flag at start of new frame
+                let stat = bus.read8(0xFF41);
+                bus.write8(0xFF41, stat & !0x01);
                 self.render_frame(bus);
                 frame_completed = true;
                 if trace_enabled() {
                     let lcdc = bus.read8(0xFF40);
                     let palette = bus.read8(0xFF47);
+                    let stat = bus.read8(0xFF41);
                     let min_pixel = self.framebuffer.iter().copied().min().unwrap_or(0);
                     let max_pixel = self.framebuffer.iter().copied().max().unwrap_or(0);
                     trace(&format!(
-                        "PPU frame: count={} scanline={} LCDC=0x{lcdc:02X} BGP=0x{palette:02X} min_pixel={min_pixel} max_pixel={max_pixel}",
+                        "PPU frame: count={} scanline={} LCDC=0x{lcdc:02X} BGP=0x{palette:02X} STAT=0x{stat:02X} min_pixel={min_pixel} max_pixel={max_pixel}",
                         self.frame_counter,
                         self.scanline,
                         lcdc = lcdc,
                         palette = palette,
+                        stat = stat,
                         min_pixel = min_pixel,
                         max_pixel = max_pixel,
                     ));

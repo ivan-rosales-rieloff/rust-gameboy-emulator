@@ -57,12 +57,24 @@ impl Bus {
             0x0000..=0x7FFF => self.cartridge.read_rom(address),
             0x8000..=0x9FFF => self.vram[usize::from(address - 0x8000)],
             0xA000..=0xBFFF => self.cartridge.read_ram(address),
-            0xC000..=0xDFFF => self.wram[usize::from(address - 0xC000)],
+            0xC000..=0xDFFF => {
+                let value = self.wram[usize::from(address - 0xC000)];
+                if trace_enabled() && address == 0xCFC7 {
+                    trace(&format!("WRAM read: 0xCFC7 = 0x{:02X}", value));
+                }
+                value
+            }
             0xE000..=0xFDFF => self.wram[usize::from(address - 0xE000)],
             0xFE00..=0xFE9F => self.oam[usize::from(address - 0xFE00)],
             0xFEA0..=0xFEFF => 0xFF,
             0xFF00 => self.read_joypad(),
-            0xFF01..=0xFF7F => self.io[usize::from(address - 0xFF00)],
+            0xFF01..=0xFF7F => {
+                let value = self.io[usize::from(address - 0xFF00)];
+                if trace_enabled() && (address == 0xFF41 || address == 0xFF0F || address == 0xFFFF) {
+                    trace(&format!("IO read: 0x{:04X} = 0x{:02X}", address, value));
+                }
+                value
+            }
             0xFF80..=0xFFFE => self.hram[usize::from(address - 0xFF80)],
             0xFFFF => self.ie,
         }
@@ -71,9 +83,19 @@ impl Bus {
     pub fn write8(&mut self, address: u16, value: u8) {
         match address {
             0x0000..=0x7FFF => self.cartridge.write_rom(address, value),
-            0x8000..=0x9FFF => self.vram[usize::from(address - 0x8000)] = value,
+            0x8000..=0x9FFF => {
+                if trace_enabled() && address >= 0x9800 && address <= 0x9BFF {
+                    trace(&format!("VRAM BG map write: 0x{:04X} <= 0x{:02X}", address, value));
+                }
+                self.vram[usize::from(address - 0x8000)] = value;
+            }
             0xA000..=0xBFFF => self.cartridge.write_ram(address, value),
-            0xC000..=0xDFFF => self.wram[usize::from(address - 0xC000)] = value,
+            0xC000..=0xDFFF => {
+                if trace_enabled() && address == 0xCFC7 {
+                    trace(&format!("WRAM write: 0xCFC7 <= 0x{:02X}", value));
+                }
+                self.wram[usize::from(address - 0xC000)] = value;
+            }
             0xE000..=0xFDFF => self.wram[usize::from(address - 0xE000)] = value,
             0xFE00..=0xFE9F => self.oam[usize::from(address - 0xFE00)] = value,
             0xFEA0..=0xFEFF => {},

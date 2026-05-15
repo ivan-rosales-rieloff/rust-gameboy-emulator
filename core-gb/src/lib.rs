@@ -286,6 +286,37 @@ mod tests {
                 }
             }
         }
+
+        // Continue running frames to reach title screen
+        println!("Continuing to title screen...");
+        for frame in 0..100 {
+            game_boy.run_frame().unwrap();
+            if frame % 10 == 0 {
+                let pc = game_boy.pc();
+                let lcdc = game_boy.bus.read8(0xFF40);
+                let palette = game_boy.bus.read8(0xFF47);
+                let framebuffer = game_boy.framebuffer();
+                let min = *framebuffer.iter().min().unwrap();
+                let max = *framebuffer.iter().max().unwrap();
+                println!("frame={} pc=0x{:04X} lcdc=0x{lcdc:02X} pal=0x{palette:02X} min={} max={}", frame, pc, min, max);
+            }
+        }
+
+        // Simulate pressing Start button
+        println!("Pressing Start button...");
+        game_boy.set_button_state(0x08); // BTN_START
+
+        // Run a few more frames with Start held
+        for frame in 100..150 {
+            game_boy.run_frame().unwrap();
+            let pc = game_boy.pc();
+            let lcdc = game_boy.bus.read8(0xFF40);
+            let palette = game_boy.bus.read8(0xFF47);
+            let framebuffer = game_boy.framebuffer();
+            let min = *framebuffer.iter().min().unwrap();
+            let max = *framebuffer.iter().max().unwrap();
+            println!("frame={} pc=0x{:04X} lcdc=0x{lcdc:02X} pal=0x{palette:02X} min={} max={}", frame, pc, min, max);
+        }
     }
 
     #[test]

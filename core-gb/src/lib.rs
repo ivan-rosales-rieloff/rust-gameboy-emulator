@@ -42,6 +42,7 @@
 //! - **Error Handling**: Comprehensive error types for different failure modes
 //! - **Modularity**: Each component can be tested and modified independently
 
+mod apu;
 mod bus;
 mod cartridge;
 mod cpu;
@@ -213,6 +214,11 @@ impl GameBoy {
         self.bus.set_button_state(buttons);
     }
 
+    /// Takes and returns the accumulated stereo audio samples from the APU.
+    pub fn take_audio_samples(&mut self) -> Vec<f32> {
+        self.bus.apu.take_samples()
+    }
+
     /// Saves the current game state to persistent storage.
     ///
     /// Only works for cartridges with battery-backed RAM.
@@ -261,6 +267,10 @@ impl HeadlessCore for GameBoy {
 
         // Track total cycles for performance monitoring
         self.cycles += u64::from(step_result.cycles);
+
+        // Tick hardware timer and APU
+        self.bus.tick_timer(step_result.cycles);
+        self.bus.apu.tick(step_result.cycles);
 
         Ok(step_result)
     }

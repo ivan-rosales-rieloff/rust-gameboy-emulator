@@ -123,6 +123,12 @@ pub struct Bus {
     ie: u8,
     /// Current joypad button state (bitfield)
     button_state: u8,
+    /// Audio Processing Unit
+    pub apu: crate::apu::Apu,
+    /// DIV timer ticks cycle accumulator
+    div_counter: u32,
+    /// TIMA timer ticks cycle accumulator
+    timer_counter: u32,
 }
 
 impl Bus {
@@ -210,6 +216,9 @@ impl Bus {
             hram: [0; HRAM_SIZE],
             ie: 0,              // No interrupts enabled initially
             button_state: 0xFF, // All buttons released (active low)
+            apu: crate::apu::Apu::default(),
+            div_counter: 0,
+            timer_counter: 0,
         }
     }
 
@@ -281,6 +290,9 @@ impl Bus {
 
             // Joypad input register (special handling required)
             0xFF00 => self.read_joypad(),
+
+            // Sound registers and Wave RAM mapped directly to APU
+            0xFF10..=0xFF26 | 0xFF30..=0xFF3F => self.apu.read_register(address),
 
             // I/O registers with selective tracing
             0xFF01..=0xFF7F => {
@@ -356,6 +368,20 @@ impl Bus {
                 self.io[0] = value;
             }
 
+            // Sound registers and Wave RAM mapped directly to APU
+            0xFF10..=0xFF26 | 0xFF30..=0xFF3F => self.apu.write_register(address, value),
+
+            // DIV register write (writing any value resets DIV and internal divider counter)
+            0xFF04 => {
+                self.io[0x04] = 0;
+                self.div_counter = 0;
+            }
+
+            // STAT register write protection: PPU-owned bits 0-2 are read-only to CPU writes
+            0xFF41 => {
+                self.io[0x41] = (self.io[0x41] & 0x07) | (value & 0x78);
+            }
+
             // Other I/O registers
             0xFF01..=0xFF7F => {
                 let io_index = usize::from(address - 0xFF00);
@@ -412,31 +438,99 @@ impl Bus {
         let p14 = select & 0x20 == 0; // Action buttons selected (bit 5 = 0)
         let p15 = select & 0x10 == 0; // Direction buttons selected (bit 4 = 0)
 
-        // Start with high bits set (inactive) and preserve select bits
-        let mut result = 0xF0 | (select & 0x30);
+        // Start with all buttons released (active-low 1s)
+        let mut lower = 0x0F;
 
         if p14 {
             // Action buttons: A, B, Select, Start (lower 4 bits of button_state)
-            let buttons = self.button_state & 0x0F;
-            result |= !buttons & 0x0F; // Active low: pressed = 0
+            let pressed = self.button_state & 0x0F;
+            lower &= !pressed; // Invert to set active-low (0 = pressed)
         }
 
         if p15 {
             // Direction buttons: Right, Left, Up, Down (upper 4 bits of button_state)
-            let buttons = (self.button_state >> 4) & 0x0F;
-            result |= !buttons & 0x0F; // Active low: pressed = 0
+            let pressed = (self.button_state >> 4) & 0x0F;
+            lower &= !pressed; // Invert to set active-low (0 = pressed)
         }
 
-        // Debug tracing for joypad operations
-        if trace_enabled() {
-            trace(&format!(
-                "P1 read: select=0x{select:02X} button_state=0x{button_state:02X} result=0x{result:02X}",
-                select = select,
-                button_state = self.button_state,
-                result = result,
-            ));
+        // Upper nibble contains high 2 bits set to 1, and bits 4-5 from the select write
+        (select & 0x30) | 0xC0 | (lower & 0x0F)
+    }
+
+    // ─── PPU Helper Methods ───────────────────────────────────────────
+
+    /// Reads the LCDC register (0xFF40) for the PPU.
+    pub fn lcdc(&self) -> u8 {
+        self.io[0x40]
+    }
+
+    /// Reads the STAT register (0xFF41) for the PPU.
+    pub fn stat(&self) -> u8 {
+        self.io[0x41]
+    }
+
+    /// Updates the PPU-controlled bits of STAT (mode in bits 0-1, LYC flag in bit 2).
+    /// Preserves game-writable bits 3-6. This bypasses the write-protection in
+    /// write8 which exists to prevent games from overwriting these PPU-owned bits.
+    pub fn set_stat_ppu_bits(&mut self, mode: u8, lyc_match: bool) {
+        let game_bits = self.io[0x41] & 0xF8; // Preserve bits 3-7
+        let lyc_bit = if lyc_match { 0x04 } else { 0x00 };
+        self.io[0x41] = game_bits | (mode & 0x03) | lyc_bit;
+    }
+
+    /// Sets the LY register (0xFF44) — current scanline.
+    pub fn set_ly(&mut self, scanline: u8) {
+        self.io[0x44] = scanline;
+    }
+
+    /// Reads the LYC register (0xFF45) — LY compare value.
+    pub fn lyc(&self) -> u8 {
+        self.io[0x45]
+    }
+
+    /// Requests an interrupt by setting flags in IF (0xFF0F).
+    pub fn request_interrupt(&mut self, flag: u8) {
+        self.io[0x0F] |= flag;
+    }
+
+    // ─── Timer System ─────────────────────────────────────────────────
+
+    /// Advances the hardware timer by the given number of CPU cycles.
+    ///
+    /// DIV (0xFF04) increments every 256 CPU cycles.
+    /// TIMA (0xFF05) increments according to frequency selected by TAC (0xFF07).
+    /// When TIMA overflows, it reloads from TMA (0xFF06) and requests a Timer interrupt.
+    pub fn tick_timer(&mut self, cycles: u32) {
+        // DIV: increments every 256 CPU cycles
+        self.div_counter += cycles;
+        while self.div_counter >= 256 {
+            self.div_counter -= 256;
+            self.io[0x04] = self.io[0x04].wrapping_add(1);
         }
 
-        result
+        // TIMA: only runs when TAC bit 2 (timer enable) is set
+        let tac = self.io[0x07];
+        if tac & 0x04 != 0 {
+            let freq = match tac & 0x03 {
+                0 => 1024,
+                1 => 16,
+                2 => 64,
+                3 => 256,
+                _ => unreachable!(),
+            };
+
+            self.timer_counter += cycles;
+            while self.timer_counter >= freq {
+                self.timer_counter -= freq;
+                let (new_tima, overflow) = self.io[0x05].overflowing_add(1);
+                if overflow {
+                    // On overflow: reload TIMA from TMA and request interrupt
+                    self.io[0x05] = self.io[0x06];
+                    self.io[0x0F] |= 0x04; // Set Timer interrupt flag (IF bit 2)
+                } else {
+                    self.io[0x05] = new_tima;
+                }
+            }
+        }
     }
 }

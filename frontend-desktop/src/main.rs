@@ -41,6 +41,13 @@ fn main() {
         process::exit(1);
     });
 
+    window.set_target_fps(60);
+
+    // Initialize audio playback with rodio
+    let audio_output = rodio::OutputStream::try_default().ok().and_then(|(stream, handle)| {
+        rodio::Sink::try_new(&handle).ok().map(|sink| (stream, sink))
+    });
+
     let mut buffer = vec![0u32; width * height];
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
@@ -78,6 +85,15 @@ fn main() {
 
             for (pixel_index, &pixel_value) in game_boy.framebuffer().iter().enumerate() {
                 buffer[pixel_index] = PALETTE[pixel_value as usize];
+            }
+
+            // Play audio samples
+            let samples = game_boy.take_audio_samples();
+            if let Some((_stream, sink)) = &audio_output {
+                if !samples.is_empty() {
+                    let source = rodio::buffer::SamplesBuffer::new(2, 44100, samples);
+                    sink.append(source);
+                }
             }
         } else {
             render_no_rom_screen(&mut buffer, width, height);

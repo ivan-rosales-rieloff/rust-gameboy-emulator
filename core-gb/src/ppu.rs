@@ -162,13 +162,8 @@ impl Ppu {
 
             // VBlank starts at scanline 144
             if self.scanline == 144 {
-                // Trigger VBlank interrupt
-                let interrupt_flags = bus.read8(0xFF0F);
-                bus.write8(0xFF0F, interrupt_flags | 0x01);
-
-                // Set VBlank flag in STAT register (bit 0)
-                let stat = bus.read8(0xFF41);
-                bus.write8(0xFF41, stat | 0x01);
+                // Trigger VBlank interrupt (IF bit 0)
+                bus.request_interrupt(0x01);
             }
 
             // Frame complete at scanline 154
@@ -176,19 +171,15 @@ impl Ppu {
                 self.scanline = 0;
                 self.frame_counter = self.frame_counter.wrapping_add(1);
 
-                // Clear VBlank flag at start of new frame
-                let stat = bus.read8(0xFF41);
-                bus.write8(0xFF41, stat & !0x01);
-
                 // Render the complete frame
                 self.render_frame(bus);
                 frame_completed = true;
 
                 // Debug tracing for frame completion
                 if trace_enabled() {
-                    let lcdc = bus.read8(0xFF40);
+                    let lcdc = bus.lcdc();
                     let palette = bus.read8(0xFF47);
-                    let stat = bus.read8(0xFF41);
+                    let stat = bus.stat();
                     let min_pixel = self.framebuffer.iter().copied().min().unwrap_or(0);
                     let max_pixel = self.framebuffer.iter().copied().max().unwrap_or(0);
                     trace(&format!(
@@ -205,7 +196,51 @@ impl Ppu {
             }
 
             // Update LY register with current scanline
-            bus.write8(0xFF44, self.scanline);
+            bus.set_ly(self.scanline);
+        }
+
+        // Determine current LCD mode
+        let mode = if self.scanline >= 144 {
+            1 // Mode 1: VBlank
+        } else if self.cycle_counter < 80 {
+            2 // Mode 2: OAM Search
+        } else if self.cycle_counter < 252 {
+            3 // Mode 3: Pixel Transfer
+        } else {
+            0 // Mode 0: HBlank
+        };
+
+        // Determine if STAT interrupt should be requested
+        let stat = bus.stat();
+        let old_mode = stat & 0x03;
+        let mut request_stat_int = false;
+
+        if mode != old_mode {
+            // Trigger STAT interrupt on mode transition if enabled
+            match mode {
+                0 => if stat & 0x08 != 0 { request_stat_int = true; }, // Mode 0 HBlank
+                1 => if stat & 0x10 != 0 { request_stat_int = true; }, // Mode 1 VBlank
+                2 => if stat & 0x20 != 0 { request_stat_int = true; }, // Mode 2 OAM Search
+                _ => {}
+            }
+        }
+
+        // Compare LY and LYC
+        let lyc = bus.lyc();
+        let lyc_match = self.scanline == lyc;
+        let old_lyc_match = stat & 0x04 != 0;
+        
+        if lyc_match && !old_lyc_match {
+            if stat & 0x40 != 0 {
+                request_stat_int = true;
+            }
+        }
+
+        // Update STAT register bits in the bus
+        bus.set_stat_ppu_bits(mode, lyc_match);
+
+        if request_stat_int {
+            bus.request_interrupt(0x02); // Set STAT interrupt flag (IF bit 1)
         }
 
         frame_completed

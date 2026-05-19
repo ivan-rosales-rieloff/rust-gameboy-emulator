@@ -144,6 +144,8 @@ pub struct Cpu {
     halted: bool,
     /// Interrupt Master Enable flag - controls interrupt processing
     ime: bool,
+    /// Interrupt Master Enable pending flag - delayed enabling of interrupts
+    ime_pending: bool,
 }
 
 impl Cpu {
@@ -546,6 +548,14 @@ impl Cpu {
             // NOP - No operation (4 cycles)
             0x00 => StepResult::new(4, false),
 
+            0x08 => {
+                // LD (a16), SP - Load SP into address a16
+                let address = self.fetch16(bus);
+                bus.write8(address, self.registers.sp as u8);
+                bus.write8(address.wrapping_add(1), (self.registers.sp >> 8) as u8);
+                StepResult::new(20, false)
+            },
+
             // INC r - Increment register (4 cycles, 12 for (HL))
             0x04..=0x3C if opcode & 0x07 == 0x04 => {
                 let reg = (opcode >> 3) & 0x07; // Extract register code
@@ -836,42 +846,42 @@ impl Cpu {
             0x80..=0x87 => {
                 let value = self.read_reg8(opcode & 0x07, bus);
                 self.add_a(value);
-                StepResult::new(4, false)
+                StepResult::new(if opcode & 0x07 == 6 { 8 } else { 4 }, false)
             }
             0x88..=0x8F => {
                 let value = self.read_reg8(opcode & 0x07, bus);
                 self.adc_a(value);
-                StepResult::new(4, false)
+                StepResult::new(if opcode & 0x07 == 6 { 8 } else { 4 }, false)
             }
             0x90..=0x97 => {
                 let value = self.read_reg8(opcode & 0x07, bus);
                 self.sub_a(value);
-                StepResult::new(4, false)
+                StepResult::new(if opcode & 0x07 == 6 { 8 } else { 4 }, false)
             }
             0x98..=0x9F => {
                 let value = self.read_reg8(opcode & 0x07, bus);
                 self.sbc_a(value);
-                StepResult::new(4, false)
+                StepResult::new(if opcode & 0x07 == 6 { 8 } else { 4 }, false)
             }
             0xA0..=0xA7 => {
                 let value = self.read_reg8(opcode & 0x07, bus);
                 self.and_a(value);
-                StepResult::new(4, false)
+                StepResult::new(if opcode & 0x07 == 6 { 8 } else { 4 }, false)
             }
             0xA8..=0xAF => {
                 let value = self.read_reg8(opcode & 0x07, bus);
                 self.xor_a(value);
-                StepResult::new(4, false)
+                StepResult::new(if opcode & 0x07 == 6 { 8 } else { 4 }, false)
             }
             0xB0..=0xB7 => {
                 let value = self.read_reg8(opcode & 0x07, bus);
                 self.or_a(value);
-                StepResult::new(4, false)
+                StepResult::new(if opcode & 0x07 == 6 { 8 } else { 4 }, false)
             }
             0xB8..=0xBF => {
                 let value = self.read_reg8(opcode & 0x07, bus);
                 self.cp_a(value);
-                StepResult::new(4, false)
+                StepResult::new(if opcode & 0x07 == 6 { 8 } else { 4 }, false)
             }
             0x18 => {
                 let offset = self.fetch8(bus) as i8;
@@ -1174,6 +1184,7 @@ impl Cpu {
             0xF3 => {
                 // DI - Disable Interrupts
                 self.ime = false;
+                self.ime_pending = false;
                 StepResult::new(4, false)
             }
             0x36 => {
@@ -1233,9 +1244,16 @@ impl Cpu {
                 StepResult::new(4, false)
             }
             0xFB => {
-                // EI - Enable Interrupts
-                self.ime = true;
+                // EI - Enable Interrupts (delayed)
+                self.ime_pending = true;
                 StepResult::new(4, false)
+            }
+            0xC7 | 0xCF | 0xD7 | 0xDF | 0xE7 | 0xEF | 0xF7 | 0xFF => {
+                // RST vector - Push PC and jump to vector
+                let vector = u16::from(opcode & 0x38);
+                self.push16(self.registers.pc, bus);
+                self.registers.pc = vector;
+                StepResult::new(16, false)
             }
             0xCB => {
                 let cb_opcode = self.fetch8(bus);
@@ -1248,6 +1266,11 @@ impl Cpu {
                 });
             }
         };
+
+        if self.ime_pending && opcode != 0xFB {
+            self.ime = true;
+            self.ime_pending = false;
+        }
 
         Ok(step_result)
     }

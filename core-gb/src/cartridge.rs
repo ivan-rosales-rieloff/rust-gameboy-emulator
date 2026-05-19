@@ -140,6 +140,9 @@ pub struct Cartridge {
 
     /// Whether this cartridge supports battery-backed saves
     has_battery: bool,
+
+    /// Whether this cartridge is GBC-compatible (based on 0x0143 byte)
+    is_cgb: bool,
 }
 
 impl Cartridge {
@@ -209,6 +212,9 @@ impl Cartridge {
             }
         };
 
+        let cgb_flag = rom[0x0143];
+        let is_cgb = (cgb_flag & 0x80) != 0;
+
         // Create cartridge instance
         let mut cartridge = Self {
             rom,
@@ -220,6 +226,7 @@ impl Cartridge {
             banking_mode: 0,         // Default to ROM banking mode (MBC1)
             ram_enabled: false,      // RAM starts disabled
             has_battery,
+            is_cgb,
         };
 
         // Load save file if battery-backed RAM is supported
@@ -456,6 +463,11 @@ impl Cartridge {
     /// Returns whether this cartridge supports battery-backed saves.
     pub fn has_battery(&self) -> bool {
         self.has_battery
+    }
+
+    /// Returns whether this cartridge is GBC-compatible.
+    pub fn is_cgb(&self) -> bool {
+        self.is_cgb
     }
 
     /// Saves the current RAM contents to a save file.

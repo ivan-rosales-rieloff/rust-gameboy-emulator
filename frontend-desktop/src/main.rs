@@ -8,7 +8,7 @@ use minifb::{Key, Scale, Window, WindowOptions};
 use rfd::FileDialog;
 
 
-const PALETTE: [u32; 4] = [0xFFFFFFFF, 0xAAAAAAFF, 0x555555FF, 0x000000FF];
+const PALETTE: [u32; 4] = [0x00FFFFFF, 0x00AAAAAA, 0x00555555, 0x00000000];
 
 // Joypad button bits (active high in our representation)
 const BTN_A: u8 = 0x01;

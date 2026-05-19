@@ -87,8 +87,8 @@ use crate::cartridge::Cartridge;
 use crate::trace::{trace, trace_enabled};
 
 // Memory region sizes (in bytes)
-const VRAM_SIZE: usize = 0x2000;  // 8KB Video RAM
-const WRAM_SIZE: usize = 0x2000;  // 8KB Working RAM
+const VRAM_SIZE: usize = 0x4000;  // 16KB Video RAM (2 banks of 8KB for GBC)
+const WRAM_SIZE: usize = 0x8000;  // 32KB Working RAM (8 banks of 4KB for GBC)
 const OAM_SIZE: usize = 0x00A0;   // 160 bytes Object Attribute Memory
 const IO_SIZE: usize = 0x0080;    // 128 bytes I/O Registers
 const HRAM_SIZE: usize = 0x007F;  // 127 bytes High RAM
@@ -129,6 +129,21 @@ pub struct Bus {
     div_counter: u32,
     /// TIMA timer ticks cycle accumulator
     timer_counter: u32,
+
+    /// Game Boy Color compatibility flag
+    pub is_cgb: bool,
+    /// GBC VRAM bank selector (0xFF4F)
+    pub vbk: u8,
+    /// GBC WRAM bank selector (0xFF70)
+    pub svbk: u8,
+    /// GBC Background Palette Memory (64 bytes, 8 palettes x 4 colors x 2 bytes)
+    pub bg_palette_ram: [u8; 64],
+    /// GBC Sprite Palette Memory (64 bytes, 8 palettes x 4 colors x 2 bytes)
+    pub sp_palette_ram: [u8; 64],
+    /// GBC Background Palette Index Register (0xFF68)
+    pub bg_palette_idx: u8,
+    /// GBC Sprite Palette Index Register (0xFF6A)
+    pub sp_palette_idx: u8,
 }
 
 impl Bus {
@@ -207,6 +222,8 @@ impl Bus {
         // Boot ROM disable register
         io[0x50] = 0x01; // FF50: boot ROM disabled
 
+        let is_cgb = cartridge.is_cgb();
+
         Self {
             cartridge,
             vram: [0; VRAM_SIZE],
@@ -219,6 +236,13 @@ impl Bus {
             apu: crate::apu::Apu::default(),
             div_counter: 0,
             timer_counter: 0,
+            is_cgb,
+            vbk: 0,
+            svbk: 0,
+            bg_palette_ram: [0; 64],
+            sp_palette_ram: [0; 64],
+            bg_palette_idx: 0,
+            sp_palette_idx: 0,
         }
     }
 
@@ -263,14 +287,20 @@ impl Bus {
             // ROM banks (routed through cartridge MBC)
             0x0000..=0x7FFF => self.cartridge.read_rom(address),
 
-            // Video RAM (tile data and background maps)
-            0x8000..=0x9FFF => self.vram[usize::from(address - 0x8000)],
+            // Video RAM (tile data and background maps, banked on GBC)
+            0x8000..=0x9FFF => {
+                if self.is_cgb && (self.vbk & 1) != 0 {
+                    self.vram[0x2000 + usize::from(address - 0x8000)]
+                } else {
+                    self.vram[usize::from(address - 0x8000)]
+                }
+            }
 
             // External RAM (cartridge save data)
             0xA000..=0xBFFF => self.cartridge.read_ram(address),
 
-            // Working RAM with special tracing for debugging
-            0xC000..=0xDFFF => {
+            // Working RAM with bank switching
+            0xC000..=0xCFFF => {
                 let value = self.wram[usize::from(address - 0xC000)];
                 // Special trace for the memory location Pokemon Red polls
                 if trace_enabled() && address == 0xCFC7 {
@@ -278,9 +308,22 @@ impl Bus {
                 }
                 value
             }
+            0xD000..=0xDFFF => {
+                let bank = if self.is_cgb {
+                    match self.svbk & 0x07 {
+                        0 => 1,
+                        b => b as usize,
+                    }
+                } else {
+                    1
+                };
+                self.wram[bank * 0x1000 + usize::from(address - 0xD000)]
+            }
 
             // Echo RAM (mirror of WRAM C000-DDFF)
-            0xE000..=0xFDFF => self.wram[usize::from(address - 0xE000)],
+            0xE000..=0xFDFF => {
+                self.read8(address - 0x2000)
+            }
 
             // Object Attribute Memory (sprite properties)
             0xFE00..=0xFE9F => self.oam[usize::from(address - 0xFE00)],
@@ -294,9 +337,18 @@ impl Bus {
             // Sound registers and Wave RAM mapped directly to APU
             0xFF10..=0xFF26 | 0xFF30..=0xFF3F => self.apu.read_register(address),
 
-            // I/O registers with selective tracing
+            // I/O registers with selective tracing and GBC register maps
             0xFF01..=0xFF7F => {
-                let value = self.io[usize::from(address - 0xFF00)];
+                let io_idx = usize::from(address - 0xFF00);
+                let value = match address {
+                    0xFF4F => self.vbk | 0xFE,
+                    0xFF70 => self.svbk | 0xF8,
+                    0xFF68 => self.bg_palette_idx | 0x40,
+                    0xFF69 => self.bg_palette_ram[usize::from(self.bg_palette_idx & 0x3F)],
+                    0xFF6A => self.sp_palette_idx | 0x40,
+                    0xFF6B => self.sp_palette_ram[usize::from(self.sp_palette_idx & 0x3F)],
+                    _ => self.io[io_idx],
+                };
                 // Trace important interrupt and LCD registers
                 if trace_enabled() && (address == 0xFF41 || address == 0xFF0F || address == 0xFFFF) {
                     trace(&format!("IO read: 0x{:04X} = 0x{:02X}", address, value));
@@ -331,28 +383,45 @@ impl Bus {
             // ROM area (handled by cartridge MBC for bank switching)
             0x0000..=0x7FFF => self.cartridge.write_rom(address, value),
 
-            // Video RAM with background map tracing
+            // Video RAM with background map tracing and GBC banking
             0x8000..=0x9FFF => {
                 // Trace writes to background map area for debugging
                 if trace_enabled() && address >= 0x9800 && address <= 0x9BFF {
                     trace(&format!("VRAM BG map write: 0x{:04X} <= 0x{:02X}", address, value));
                 }
-                self.vram[usize::from(address - 0x8000)] = value;
+                if self.is_cgb && (self.vbk & 1) != 0 {
+                    self.vram[0x2000 + usize::from(address - 0x8000)] = value;
+                } else {
+                    self.vram[usize::from(address - 0x8000)] = value;
+                }
             }
 
             // External RAM (cartridge save data)
             0xA000..=0xBFFF => self.cartridge.write_ram(address, value),
 
-            // Working RAM with special tracing
-            0xC000..=0xDFFF => {
+            // Working RAM with bank switching
+            0xC000..=0xCFFF => {
                 if trace_enabled() && address == 0xCFC7 {
                     trace(&format!("WRAM write: 0xCFC7 <= 0x{:02X}", value));
                 }
                 self.wram[usize::from(address - 0xC000)] = value;
             }
+            0xD000..=0xDFFF => {
+                let bank = if self.is_cgb {
+                    match self.svbk & 0x07 {
+                        0 => 1,
+                        b => b as usize,
+                    }
+                } else {
+                    1
+                };
+                self.wram[bank * 0x1000 + usize::from(address - 0xD000)] = value;
+            }
 
             // Echo RAM (mirror of WRAM)
-            0xE000..=0xFDFF => self.wram[usize::from(address - 0xE000)] = value,
+            0xE000..=0xFDFF => {
+                self.write8(address - 0x2000, value);
+            }
 
             // Object Attribute Memory
             0xFE00..=0xFE9F => self.oam[usize::from(address - 0xFE00)] = value,
@@ -382,7 +451,7 @@ impl Bus {
                 self.io[0x41] = (self.io[0x41] & 0x07) | (value & 0x78);
             }
 
-            // Other I/O registers
+            // Other I/O registers and GBC registers mapping
             0xFF01..=0xFF7F => {
                 let io_index = usize::from(address - 0xFF00);
 
@@ -401,7 +470,40 @@ impl Bus {
                     trace(&format!("BGP write: 0xFF47 <= 0x{value:02X}"));
                 }
 
-                self.io[io_index] = value;
+                // Intercept GBC specific register writes
+                match address {
+                    0xFF4F => {
+                        self.vbk = value & 0x01;
+                    }
+                    0xFF70 => {
+                        self.svbk = value & 0x07;
+                    }
+                    0xFF68 => {
+                        self.bg_palette_idx = value;
+                    }
+                    0xFF69 => {
+                        let idx = usize::from(self.bg_palette_idx & 0x3F);
+                        self.bg_palette_ram[idx] = value;
+                        if (self.bg_palette_idx & 0x80) != 0 {
+                            let next = (self.bg_palette_idx & 0x3F).wrapping_add(1) & 0x3F;
+                            self.bg_palette_idx = 0x80 | next;
+                        }
+                    }
+                    0xFF6A => {
+                        self.sp_palette_idx = value;
+                    }
+                    0xFF6B => {
+                        let idx = usize::from(self.sp_palette_idx & 0x3F);
+                        self.sp_palette_ram[idx] = value;
+                        if (self.sp_palette_idx & 0x80) != 0 {
+                            let next = (self.sp_palette_idx & 0x3F).wrapping_add(1) & 0x3F;
+                            self.sp_palette_idx = 0x80 | next;
+                        }
+                    }
+                    _ => {
+                        self.io[io_index] = value;
+                    }
+                }
             }
 
             // High RAM

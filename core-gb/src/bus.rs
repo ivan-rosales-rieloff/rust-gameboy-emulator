@@ -472,15 +472,26 @@ impl Bus {
 
                 // Intercept GBC specific register writes
                 match address {
+                    // VBK: GBC VRAM Bank Select (0xFF4F). Only Bit 0 is writable.
+                    // Allows selecting active 8KB VRAM bank 0 or bank 1.
                     0xFF4F => {
                         self.vbk = value & 0x01;
                     }
+                    // SVBK: GBC WRAM Bank Select (0xFF70). Only Bits 0-2 are writable.
+                    // Allows selecting active 4KB WRAM bank 1 through bank 7.
+                    // A value of 0 is automatically handled as WRAM bank 1.
                     0xFF70 => {
                         self.svbk = value & 0x07;
                     }
+                    // BGPI: GBC Background Palette Index Register (0xFF68).
+                    // Bit 7 is Auto-Increment (1=Enable, 0=Disable).
+                    // Bits 0-5 specify the byte address offset (0-63) inside bg_palette_ram.
                     0xFF68 => {
                         self.bg_palette_idx = value;
                     }
+                    // BGPD: GBC Background Palette Data Register (0xFF69).
+                    // Writes a byte to bg_palette_ram at the index specified by BGPI.
+                    // If Auto-Increment is enabled, BGPI address is automatically incremented.
                     0xFF69 => {
                         let idx = usize::from(self.bg_palette_idx & 0x3F);
                         self.bg_palette_ram[idx] = value;
@@ -489,9 +500,15 @@ impl Bus {
                             self.bg_palette_idx = 0x80 | next;
                         }
                     }
+                    // OBPI: GBC Sprite Palette Index Register (0xFF6A).
+                    // Bit 7 is Auto-Increment (1=Enable, 0=Disable).
+                    // Bits 0-5 specify the byte address offset (0-63) inside sp_palette_ram.
                     0xFF6A => {
                         self.sp_palette_idx = value;
                     }
+                    // OBPD: GBC Sprite Palette Data Register (0xFF6B).
+                    // Writes a byte to sp_palette_ram at the index specified by OBPI.
+                    // If Auto-Increment is enabled, OBPI address is automatically incremented.
                     0xFF6B => {
                         let idx = usize::from(self.sp_palette_idx & 0x3F);
                         self.sp_palette_ram[idx] = value;
@@ -500,6 +517,7 @@ impl Bus {
                             self.sp_palette_idx = 0x80 | next;
                         }
                     }
+                    // Default fallback: route other standard register writes to self.io
                     _ => {
                         self.io[io_index] = value;
                     }

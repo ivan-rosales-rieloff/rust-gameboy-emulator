@@ -212,6 +212,9 @@ impl Cartridge {
             }
         };
 
+        // GBC compatibility flag is specified at address 0x0143 in the cartridge header.
+        // - Bit 7 set (0x80) indicates GBC support (backward compatible with standard Game Boy).
+        // - Value 0xC0 indicates GBC-only (fails to run on standard DMG monochrome systems).
         let cgb_flag = rom[0x0143];
         let is_cgb = (cgb_flag & 0x80) != 0;
 

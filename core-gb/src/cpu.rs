@@ -648,6 +648,28 @@ impl Cpu {
                 self.set_flag(FLAG_C, carry);
                 StepResult::new(4, false)
             }
+            0x17 => {
+                // RLA - Rotate left A through carry
+                let carry_in = if self.registers.f & FLAG_C != 0 { 1 } else { 0 };
+                let carry_out = self.registers.a & 0x80 != 0;
+                self.registers.a = (self.registers.a << 1) | carry_in;
+                self.set_flag(FLAG_Z, false);
+                self.set_flag(FLAG_N, false);
+                self.set_flag(FLAG_H, false);
+                self.set_flag(FLAG_C, carry_out);
+                StepResult::new(4, false)
+            }
+            0x1F => {
+                // RRA - Rotate right A through carry
+                let carry_in = if self.registers.f & FLAG_C != 0 { 0x80 } else { 0 };
+                let carry_out = self.registers.a & 0x01 != 0;
+                self.registers.a = (self.registers.a >> 1) | carry_in;
+                self.set_flag(FLAG_Z, false);
+                self.set_flag(FLAG_N, false);
+                self.set_flag(FLAG_H, false);
+                self.set_flag(FLAG_C, carry_out);
+                StepResult::new(4, false)
+            }
             0x02 => {
                 bus.write8(self.bc(), self.registers.a);
                 StepResult::new(8, false)

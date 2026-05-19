@@ -247,22 +247,44 @@ impl Ppu {
         // Determine tile map base address (0x9800 or 0x9C00)
         let bg_map_base = if lcdc & 0x08 != 0 { 0x9C00 } else { 0x9800 };
 
+        // Determine Window parameters
+        let wy = bus.read8(0xFF4A) as usize;       // Window Y
+        let wx = bus.read8(0xFF4B) as usize;       // Window X
+        let win_enabled = (lcdc & 0x20) != 0;      // Bit 5: Window enable
+        let win_map_base = if lcdc & 0x40 != 0 { 0x9C00 } else { 0x9800 }; // Bit 6: Window map base
+        let win_x_start = (wx as i32) - 7;
+
         // Determine tile data addressing mode
         let tile_data_signed = lcdc & 0x10 == 0;
 
-        // Render background tile by tile
+        // Render background and window pixel by pixel
         for y in 0..SCREEN_HEIGHT {
-            // Calculate which tile row and pixel row within tile
-            let map_y = ((y + scroll_y) & 0xFF) / 8;      // Tile row (0-31)
-            let tile_line = ((y + scroll_y) & 0x07) as u16; // Pixel row within tile (0-7)
-
             for x in 0..SCREEN_WIDTH {
-                // Calculate which tile column and pixel column within tile
-                let map_x = ((x + scroll_x) & 0xFF) / 8;      // Tile column (0-31)
-                let tile_col = ((x + scroll_x) & 0x07) as u16; // Pixel column within tile (0-7)
+                // Determine if we should render the window or background pixel
+                let in_window = win_enabled && wy < SCREEN_HEIGHT && y >= wy && (x as i32) >= win_x_start;
 
-                // Get tile index from background map
-                let tile_index_addr = bg_map_base + (map_y * 32 + map_x) as u16;
+                let (map_y, tile_line, map_x, tile_col, map_base) = if in_window {
+                    let window_x = (x as i32 - win_x_start) as usize;
+                    let window_y = y - wy;
+                    (
+                        window_y / 8,
+                        (window_y % 8) as u16,
+                        window_x / 8,
+                        (window_x % 8) as u16,
+                        win_map_base,
+                    )
+                } else {
+                    (
+                        ((y + scroll_y) & 0xFF) / 8,
+                        ((y + scroll_y) & 0x07) as u16,
+                        ((x + scroll_x) & 0xFF) / 8,
+                        ((x + scroll_x) & 0x07) as u16,
+                        bg_map_base,
+                    )
+                };
+
+                // Get tile index from the appropriate map
+                let tile_index_addr = map_base + (map_y * 32 + map_x) as u16;
                 let tile_index = bus.read8(tile_index_addr);
 
                 // Calculate tile data address based on addressing mode

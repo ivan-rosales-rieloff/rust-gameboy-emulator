@@ -7,3 +7,4 @@ edition = "2024"
 core-gb = { path = "../core-gb" }
 minifb = "0.27"
 rfd = "0.12"
+rodio = "0.17"

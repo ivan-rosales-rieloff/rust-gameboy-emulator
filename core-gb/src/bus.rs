@@ -393,7 +393,7 @@ impl Bus {
     ///
     /// ## Joypad Matrix
     ///
-    /// ```
+    /// ```text
     /// P1.4 = 0: Select action buttons    P1.5 = 0: Select direction buttons
     ///           P13 --- A  (Bit 0)                 P13 --- Right (Bit 0)
     ///           P12 --- B  (Bit 1)                 P12 --- Left  (Bit 1)

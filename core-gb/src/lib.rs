@@ -100,9 +100,14 @@ impl GameBoy {
     /// * `Err(GameBoyError)` - Failed to load cartridge (invalid ROM format, etc.)
     ///
     /// # Example
-    /// ```rust
+    /// ```no_run
+    /// use core_gb::GameBoy;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let rom_data = std::fs::read("PokemonRed.gb")?;
     /// let gb = GameBoy::from_rom_bytes(rom_data)?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn from_rom_bytes(rom: Vec<u8>) -> Result<Self, GameBoyError> {
         // Parse the ROM into a cartridge (handles MBC detection, header validation)
@@ -564,5 +569,28 @@ mod tests {
         assert_eq!(game_boy.registers().f & 0x80, 0x80); // Z flag set
         assert_eq!(game_boy.registers().f & 0x40, 0x40); // N flag set
         assert_eq!(game_boy.registers().a, 0x05);
+    }
+
+    #[test]
+    fn supports_rla_and_rra_accumulator_rotates() {
+        let rom = make_rom(
+            &[
+                0x3E, 0x85, // LD A,$85 (binary 1000 0101)
+                0x37,       // SCF (set carry flag)
+                0x17,       // RLA (A becomes 0000 1011 = 0x0B, carry becomes 1)
+                0x1F,       // RRA (A becomes 1000 0101 = 0x85, carry becomes 1)
+                0x76,       // HALT
+            ],
+            0x00,
+            "ROTATES",
+        );
+        let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
+        let stats = game_boy.run_steps(5).unwrap();
+
+        assert_eq!(stats.instructions, 5);
+        assert!(stats.halted);
+        assert_eq!(game_boy.registers().a, 0x85);
+        assert_eq!(game_boy.registers().f & 0x10, 0x10); // carry flag set
+        assert_eq!(game_boy.registers().f & 0x80, 0x00); // zero flag NOT set
     }
 }

@@ -351,6 +351,7 @@ name = "frontend-desktop"
 version = "0.1.0"
 dependencies = [
  "core-gb",
+ "core-gba",
  "minifb",
  "rfd",
  "rodio",

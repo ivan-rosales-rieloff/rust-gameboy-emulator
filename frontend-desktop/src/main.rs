@@ -3,10 +3,10 @@ use std::fs;
 use std::path::PathBuf;
 use std::process;
 
-use core_gb::{GameBoy};
+use core_gb::GameBoy;
+use core_gba::GameBoyAdvance;
 use minifb::{Key, Scale, Window, WindowOptions};
 use rfd::FileDialog;
-
 
 const PALETTE: [u32; 4] = [0x00FFFFFF, 0x00AAAAAA, 0x00555555, 0x00000000];
 
@@ -20,15 +20,89 @@ const BTN_LEFT: u8 = 0x20;
 const BTN_UP: u8 = 0x40;
 const BTN_DOWN: u8 = 0x80;
 
+enum EmulatorCore {
+    GameBoy(GameBoy),
+    GameBoyAdvance(GameBoyAdvance),
+}
+
+impl EmulatorCore {
+    fn screen_dimensions(&self) -> (usize, usize) {
+        match self {
+            Self::GameBoy(_) => (160, 144),
+            Self::GameBoyAdvance(_) => (240, 160),
+        }
+    }
+
+    fn title(&self) -> String {
+        match self {
+            Self::GameBoy(gb) => gb.title().to_string(),
+            Self::GameBoyAdvance(gba) => gba.title().to_string(),
+        }
+    }
+
+    fn run_frame(&mut self) -> Result<(), String> {
+        match self {
+            Self::GameBoy(gb) => gb.run_frame().map_err(|e| format!("Game Boy execution error: {:?}", e)),
+            Self::GameBoyAdvance(gba) => gba.run_frame().map_err(|_| "Game Boy Advance execution error".to_string()),
+        }
+    }
+
+    fn set_button_state(&mut self, buttons: u8) {
+        match self {
+            Self::GameBoy(gb) => gb.set_button_state(buttons),
+            Self::GameBoyAdvance(gba) => gba.set_button_state(buttons),
+        }
+    }
+
+    fn take_audio_samples(&mut self) -> Vec<f32> {
+        match self {
+            Self::GameBoy(gb) => gb.take_audio_samples(),
+            Self::GameBoyAdvance(gba) => gba.take_audio_samples(),
+        }
+    }
+
+    fn has_battery(&self) -> bool {
+        match self {
+            Self::GameBoy(gb) => gb.has_battery(),
+            Self::GameBoyAdvance(gba) => gba.has_battery(),
+        }
+    }
+
+    fn save_game(&self) -> Result<(), String> {
+        match self {
+            Self::GameBoy(gb) => gb.save_game().map_err(|e| format!("Save failed: {:?}", e)),
+            Self::GameBoyAdvance(gba) => gba.save_game().map_err(|_| "Save failed".to_string()),
+        }
+    }
+
+    fn render_to_buffer(&self, dest: &mut [u32]) {
+        match self {
+            Self::GameBoy(gb) => {
+                for (pixel_index, &pixel_value) in gb.framebuffer().iter().enumerate() {
+                    dest[pixel_index] = PALETTE[pixel_value as usize];
+                }
+            }
+            Self::GameBoyAdvance(gba) => {
+                dest.copy_from_slice(gba.framebuffer());
+            }
+        }
+    }
+}
+
 fn main() {
-    let mut game_boy = env::args().nth(1).map(PathBuf::from).map(load_rom).transpose().unwrap_or_else(|error| {
+    let mut core = env::args().nth(1).map(PathBuf::from).map(load_rom).transpose().unwrap_or_else(|error| {
         eprintln!("{error}");
         process::exit(1);
     });
 
-    let (width, height) = GameBoy::screen_dimensions();
+    let (mut width, mut height) = if let Some(c) = &core {
+        c.screen_dimensions()
+    } else {
+        (160, 144)
+    };
+
     let mut window = Window::new(
-        "Game Boy Emulator",
+        if let Some(c) = &core { &c.title() } else { "Game Boy / GBA Emulator" },
         width,
         height,
         WindowOptions {
@@ -52,20 +126,42 @@ fn main() {
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         if window.is_key_pressed(Key::L, minifb::KeyRepeat::No) {
-            if let Some(game) = &game_boy {
+            if let Some(game) = &core {
                 save_current_game(game);
             }
 
             if let Some(path) = FileDialog::new()
-                .add_filter("Game Boy ROM", &[
+                .add_filter("Game ROM", &[
                     "gb",
                     "gbc",
+                    "gba",
                 ])
                 .pick_file()
             {
                 match load_rom(path) {
-                    Ok(loaded_game) => {
-                        game_boy = Some(loaded_game);
+                    Ok(loaded_core) => {
+                        let dims = loaded_core.screen_dimensions();
+                        width = dims.0;
+                        height = dims.1;
+                        buffer = vec![0u32; width * height];
+                        
+                        // Recreate the window with the new core's dimensions
+                        window = Window::new(
+                            &loaded_core.title(),
+                            width,
+                            height,
+                            WindowOptions {
+                                scale: Scale::X4,
+                                ..WindowOptions::default()
+                            },
+                        )
+                        .unwrap_or_else(|error| {
+                            eprintln!("Failed to create window: {error}");
+                            process::exit(1);
+                        });
+                        window.set_target_fps(60);
+
+                        core = Some(loaded_core);
                     }
                     Err(error) => {
                         eprintln!("Failed to load ROM: {error}");
@@ -74,21 +170,19 @@ fn main() {
             }
         }
 
-        if let Some(game_boy) = &mut game_boy {
+        if let Some(active_core) = &mut core {
             let buttons = read_buttons(&window);
-            game_boy.set_button_state(buttons);
+            active_core.set_button_state(buttons);
 
-            if let Err(error) = game_boy.run_frame() {
+            if let Err(error) = active_core.run_frame() {
                 eprintln!("Emulation error: {error}");
                 process::exit(1);
             }
 
-            for (pixel_index, &pixel_value) in game_boy.framebuffer().iter().enumerate() {
-                buffer[pixel_index] = PALETTE[pixel_value as usize];
-            }
+            active_core.render_to_buffer(&mut buffer);
 
             // Play audio samples
-            let samples = game_boy.take_audio_samples();
+            let samples = active_core.take_audio_samples();
             if let Some((_stream, sink)) = &audio_output {
                 if !samples.is_empty() {
                     let source = rodio::buffer::SamplesBuffer::new(2, 44100, samples);
@@ -102,9 +196,9 @@ fn main() {
         window.update_with_buffer(&buffer, width, height).unwrap();
     }
 
-    if let Some(game_boy) = &game_boy {
-        if game_boy.has_battery() {
-            if let Err(error) = game_boy.save_game() {
+    if let Some(active_core) = &core {
+        if active_core.has_battery() {
+            if let Err(error) = active_core.save_game() {
                 eprintln!("Failed to save game: {error}");
             } else {
                 println!("Game saved successfully!");
@@ -113,9 +207,9 @@ fn main() {
     }
 }
 
-fn save_current_game(game_boy: &GameBoy) {
-    if game_boy.has_battery() {
-        if let Err(error) = game_boy.save_game() {
+fn save_current_game(core: &EmulatorCore) {
+    if core.has_battery() {
+        if let Err(error) = core.save_game() {
             eprintln!("Failed to save current game before loading new ROM: {error}");
         } else {
             println!("Current game saved successfully!");
@@ -123,38 +217,53 @@ fn save_current_game(game_boy: &GameBoy) {
     }
 }
 
-fn load_rom(path: PathBuf) -> Result<GameBoy, String> {
+fn load_rom(path: PathBuf) -> Result<EmulatorCore, String> {
+    let extension = path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|s| s.to_lowercase());
+
     let rom_bytes = fs::read(&path)
         .map_err(|error| format!("Failed to read ROM at '{}': {error}", path.display()))?;
 
-    GameBoy::from_rom_bytes(rom_bytes).map_err(|error| format!("Failed to initialize Game Boy core: {error}"))
+    match extension.as_deref() {
+        Some("gba") => {
+            let core = GameBoyAdvance::from_rom_bytes(rom_bytes)
+                .map_err(|error| format!("Failed to initialize Game Boy Advance core: {:?}", error))?;
+            Ok(EmulatorCore::GameBoyAdvance(core))
+        }
+        Some("gb") | Some("gbc") | _ => {
+            let core = GameBoy::from_rom_bytes(rom_bytes)
+                .map_err(|error| format!("Failed to initialize Game Boy core: {:?}", error))?;
+            Ok(EmulatorCore::GameBoy(core))
+        }
+    }
 }
 
 fn read_buttons(window: &Window) -> u8 {
     let mut buttons = 0u8;
 
-    if window.is_key_pressed(Key::Z, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Z) {
         buttons |= BTN_A;
     }
-    if window.is_key_pressed(Key::X, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::X) {
         buttons |= BTN_B;
     }
-    if window.is_key_pressed(Key::Space, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Space) {
         buttons |= BTN_SELECT;
     }
-    if window.is_key_pressed(Key::Enter, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Enter) {
         buttons |= BTN_START;
     }
-    if window.is_key_pressed(Key::Right, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Right) {
         buttons |= BTN_RIGHT;
     }
-    if window.is_key_pressed(Key::Left, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Left) {
         buttons |= BTN_LEFT;
     }
-    if window.is_key_pressed(Key::Up, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Up) {
         buttons |= BTN_UP;
     }
-    if window.is_key_pressed(Key::Down, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Down) {
         buttons |= BTN_DOWN;
     }
 
@@ -166,7 +275,7 @@ fn read_buttons(window: &Window) -> u8 {
 }
 
 fn trace_enabled() -> bool {
-    env::args().any(|arg| arg == "--uitrace"  || std::env::var_os("GB_TRACE").is_some() )
+    env::args().any(|arg| arg == "--uitrace" || std::env::var_os("GB_TRACE").is_some())
 }
 
 fn render_no_rom_screen(buffer: &mut [u32], width: usize, _height: usize) {

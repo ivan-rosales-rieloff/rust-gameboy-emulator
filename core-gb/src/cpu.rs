@@ -78,6 +78,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 use core_common::StepResult;
+use serde::{Deserialize, Serialize};
 
 use crate::bus::Bus;
 use crate::trace::{trace, trace_enabled};
@@ -92,7 +93,7 @@ const FLAG_C: u8 = 0x10; // Carry flag (bit 4)
 ///
 /// The Game Boy has 8 general-purpose 8-bit registers and 2 special 16-bit registers.
 /// Registers are often used in pairs (BC, DE, HL) for 16-bit operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Registers {
     /// Accumulator register - primary register for arithmetic operations
     pub a: u8,
@@ -118,13 +119,13 @@ impl Default for Registers {
     /// before jumping to the game code at 0x0100.
     fn default() -> Self {
         Self {
-            a: 0x01,    // Accumulator initialized to 1
-            f: 0xB0,    // Flags: Z=1, N=0, H=1, C=1
-            b: 0x00,    // BC = 0x0013 ( Nintendo logo checksum )
+            a: 0x01, // Accumulator initialized to 1
+            f: 0xB0, // Flags: Z=1, N=0, H=1, C=1
+            b: 0x00, // BC = 0x0013 ( Nintendo logo checksum )
             c: 0x13,
-            d: 0x00,    // DE = 0x00D8 (more boot values)
+            d: 0x00, // DE = 0x00D8 (more boot values)
             e: 0xD8,
-            h: 0x01,    // HL = 0x014D (points to Nintendo logo)
+            h: 0x01, // HL = 0x014D (points to Nintendo logo)
             l: 0x4D,
             sp: 0xFFFE, // Stack pointer at top of HRAM
             pc: 0x0100, // Program counter at game entry point
@@ -136,7 +137,7 @@ impl Default for Registers {
 ///
 /// This struct represents the complete CPU state and implements instruction
 /// execution, interrupt handling, and timing.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Cpu {
     /// Current register values
     registers: Registers,
@@ -439,7 +440,7 @@ impl Cpu {
     /// Returns a bitmask of active interrupts (enabled and flagged).
     fn pending_interrupts(&self, bus: &Bus) -> u8 {
         let interrupt_enable = bus.read8(0xFFFF); // IE register
-        let interrupt_flags = bus.read8(0xFF0F);  // IF register
+        let interrupt_flags = bus.read8(0xFF0F); // IF register
         interrupt_enable & interrupt_flags
     }
 
@@ -473,8 +474,8 @@ impl Cpu {
         };
 
         // Service the interrupt
-        self.halted = false;        // Resume from halt
-        self.ime = false;           // Disable interrupts during handler
+        self.halted = false; // Resume from halt
+        self.ime = false; // Disable interrupts during handler
         self.push16(self.registers.pc, bus); // Save return address
 
         // Clear the interrupt flag
@@ -554,7 +555,7 @@ impl Cpu {
                 bus.write8(address, self.registers.sp as u8);
                 bus.write8(address.wrapping_add(1), (self.registers.sp >> 8) as u8);
                 StepResult::new(20, false)
-            },
+            }
 
             // INC r - Increment register (4 cycles, 12 for (HL))
             0x04..=0x3C if opcode & 0x07 == 0x04 => {
@@ -671,7 +672,11 @@ impl Cpu {
             }
             0x1F => {
                 // RRA - Rotate right A through carry
-                let carry_in = if self.registers.f & FLAG_C != 0 { 0x80 } else { 0 };
+                let carry_in = if self.registers.f & FLAG_C != 0 {
+                    0x80
+                } else {
+                    0
+                };
                 let carry_out = self.registers.a & 0x01 != 0;
                 self.registers.a = (self.registers.a >> 1) | carry_in;
                 self.set_flag(FLAG_Z, false);
@@ -841,7 +846,14 @@ impl Cpu {
                 let source = opcode & 0x07;
                 let value = self.read_reg8(source, bus);
                 self.write_reg8(destination, value, bus);
-                StepResult::new(if destination == 6 || source == 6 { 8 } else { 4 }, false)
+                StepResult::new(
+                    if destination == 6 || source == 6 {
+                        8
+                    } else {
+                        4
+                    },
+                    false,
+                )
             }
             0x80..=0x87 => {
                 let value = self.read_reg8(opcode & 0x07, bus);
@@ -1020,7 +1032,10 @@ impl Cpu {
                     let return_address = self.registers.pc;
                     self.registers.sp = self.registers.sp.wrapping_sub(2);
                     bus.write8(self.registers.sp, (return_address & 0xFF) as u8);
-                    bus.write8(self.registers.sp.wrapping_add(1), (return_address >> 8) as u8);
+                    bus.write8(
+                        self.registers.sp.wrapping_add(1),
+                        (return_address >> 8) as u8,
+                    );
                     self.registers.pc = address;
                     StepResult::new(24, false)
                 } else {
@@ -1033,7 +1048,10 @@ impl Cpu {
                     let return_address = self.registers.pc;
                     self.registers.sp = self.registers.sp.wrapping_sub(2);
                     bus.write8(self.registers.sp, (return_address & 0xFF) as u8);
-                    bus.write8(self.registers.sp.wrapping_add(1), (return_address >> 8) as u8);
+                    bus.write8(
+                        self.registers.sp.wrapping_add(1),
+                        (return_address >> 8) as u8,
+                    );
                     self.registers.pc = address;
                     StepResult::new(24, false)
                 } else {
@@ -1046,7 +1064,10 @@ impl Cpu {
                     let return_address = self.registers.pc;
                     self.registers.sp = self.registers.sp.wrapping_sub(2);
                     bus.write8(self.registers.sp, (return_address & 0xFF) as u8);
-                    bus.write8(self.registers.sp.wrapping_add(1), (return_address >> 8) as u8);
+                    bus.write8(
+                        self.registers.sp.wrapping_add(1),
+                        (return_address >> 8) as u8,
+                    );
                     self.registers.pc = address;
                     StepResult::new(24, false)
                 } else {
@@ -1059,7 +1080,10 @@ impl Cpu {
                     let return_address = self.registers.pc;
                     self.registers.sp = self.registers.sp.wrapping_sub(2);
                     bus.write8(self.registers.sp, (return_address & 0xFF) as u8);
-                    bus.write8(self.registers.sp.wrapping_add(1), (return_address >> 8) as u8);
+                    bus.write8(
+                        self.registers.sp.wrapping_add(1),
+                        (return_address >> 8) as u8,
+                    );
                     self.registers.pc = address;
                     StepResult::new(24, false)
                 } else {
@@ -1071,7 +1095,10 @@ impl Cpu {
                 let return_address = self.registers.pc;
                 self.registers.sp = self.registers.sp.wrapping_sub(2);
                 bus.write8(self.registers.sp, (return_address & 0xFF) as u8);
-                bus.write8(self.registers.sp.wrapping_add(1), (return_address >> 8) as u8);
+                bus.write8(
+                    self.registers.sp.wrapping_add(1),
+                    (return_address >> 8) as u8,
+                );
                 self.registers.pc = address;
                 StepResult::new(24, false)
             }
@@ -1312,7 +1339,11 @@ impl Cpu {
                 // RR r - Rotate right through carry
                 let reg = opcode & 0x07;
                 let value = self.read_reg8(reg, bus);
-                let carry_in = if self.registers.f & FLAG_C != 0 { 0x80 } else { 0 };
+                let carry_in = if self.registers.f & FLAG_C != 0 {
+                    0x80
+                } else {
+                    0
+                };
                 let carry_out = value & 0x01 != 0;
                 let rotated = (value >> 1) | carry_in;
                 self.write_reg8(reg, rotated, bus);

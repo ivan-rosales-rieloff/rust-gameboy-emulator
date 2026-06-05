@@ -3,12 +3,14 @@ use std::fs;
 use std::path::PathBuf;
 use std::process;
 
-use core_gb::{GameBoy};
+use core_gb::GameBoy;
 use minifb::{Key, Scale, Window, WindowOptions};
 use rfd::FileDialog;
 
+mod network;
+use network::NetworkSettings;
 
-const PALETTE: [u32; 4] = [0xFFFFFFFF, 0xAAAAAAFF, 0x555555FF, 0x000000FF];
+const PALETTE: [u32; 4] = [0x00FFFFFF, 0x00AAAAAA, 0x00555555, 0x00000000];
 
 // Joypad button bits (active high in our representation)
 const BTN_A: u8 = 0x01;
@@ -21,10 +23,15 @@ const BTN_UP: u8 = 0x40;
 const BTN_DOWN: u8 = 0x80;
 
 fn main() {
-    let mut game_boy = env::args().nth(1).map(PathBuf::from).map(load_rom).transpose().unwrap_or_else(|error| {
-        eprintln!("{error}");
-        process::exit(1);
-    });
+    let mut game_boy = env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .map(load_rom)
+        .transpose()
+        .unwrap_or_else(|error| {
+            eprintln!("{error}");
+            process::exit(1);
+        });
 
     let (width, height) = GameBoy::screen_dimensions();
     let mut window = Window::new(
@@ -43,10 +50,18 @@ fn main() {
 
     window.set_target_fps(60);
 
+    let mut network_settings = NetworkSettings::default();
+    let mut network_menu_open = false;
+    let mut link_active = false;
+
     // Initialize audio playback with rodio
-    let audio_output = rodio::OutputStream::try_default().ok().and_then(|(stream, handle)| {
-        rodio::Sink::try_new(&handle).ok().map(|sink| (stream, sink))
-    });
+    let audio_output = rodio::OutputStream::try_default()
+        .ok()
+        .and_then(|(stream, handle)| {
+            rodio::Sink::try_new(&handle)
+                .ok()
+                .map(|sink| (stream, sink))
+        });
 
     let mut buffer = vec![0u32; width * height];
 
@@ -57,15 +72,14 @@ fn main() {
             }
 
             if let Some(path) = FileDialog::new()
-                .add_filter("Game Boy ROM", &[
-                    "gb",
-                    "gbc",
-                ])
+                .add_filter("Game Boy ROM", &["gb", "gbc"])
                 .pick_file()
             {
                 match load_rom(path) {
                     Ok(loaded_game) => {
                         game_boy = Some(loaded_game);
+                        link_active = false;
+                        network_settings.disconnect();
                     }
                     Err(error) => {
                         eprintln!("Failed to load ROM: {error}");
@@ -74,8 +88,89 @@ fn main() {
             }
         }
 
+        if window.is_key_pressed(Key::S, minifb::KeyRepeat::No) {
+            if let Some(game) = &game_boy {
+                if let Some(path) = FileDialog::new()
+                    .add_filter("Game Boy State", &["state", "sav"])
+                    .save_file()
+                {
+                    if let Err(error) = game.save_state(path) {
+                        eprintln!("Failed to save state: {error}");
+                    }
+                }
+            }
+        }
+
+        if window.is_key_pressed(Key::O, minifb::KeyRepeat::No) {
+            if let Some(path) = FileDialog::new()
+                .add_filter("Game Boy State", &["state", "sav"])
+                .pick_file()
+            {
+                match GameBoy::load_state(path) {
+                    Ok(state) => {
+                        game_boy = Some(state);
+                        link_active = false;
+                        network_settings.disconnect();
+                    }
+                    Err(error) => {
+                        eprintln!("Failed to load state: {error}");
+                    }
+                }
+            }
+        }
+
+        if window.is_key_pressed(Key::N, minifb::KeyRepeat::No) {
+            network_menu_open = !network_menu_open;
+        }
+
+        if network_menu_open {
+            if window.is_key_pressed(Key::M, minifb::KeyRepeat::No) {
+                network_settings.toggle_mode();
+                println!("Network mode: {}", network_settings.mode.label());
+            }
+            if window.is_key_pressed(Key::H, minifb::KeyRepeat::No) {
+                network_settings.cycle_host();
+            }
+            if window.is_key_pressed(Key::Up, minifb::KeyRepeat::No) {
+                network_settings.change_port(1);
+            }
+            if window.is_key_pressed(Key::Down, minifb::KeyRepeat::No) {
+                network_settings.change_port(-1);
+            }
+            if window.is_key_pressed(Key::C, minifb::KeyRepeat::No) {
+                if let Some(game_boy) = &mut game_boy {
+                    if link_active {
+                        game_boy.disconnect_link();
+                        link_active = false;
+                        network_settings.disconnect();
+                    } else {
+                        match network_settings.connect() {
+                            Ok(Some(endpoint)) => {
+                                game_boy.connect_link(endpoint);
+                                link_active = true;
+                            }
+                            Ok(None) => {
+                                // Wait for server accept if in server mode.
+                            }
+                            Err(error) => {
+                                eprintln!("Network error: {error}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(game_boy) = &mut game_boy {
             let buttons = read_buttons(&window);
+
+            if !link_active {
+                if let Ok(Some(endpoint)) = network_settings.poll_server() {
+                    game_boy.connect_link(endpoint);
+                    link_active = true;
+                }
+            }
+
             game_boy.set_button_state(buttons);
 
             if let Err(error) = game_boy.run_frame() {
@@ -127,7 +222,8 @@ fn load_rom(path: PathBuf) -> Result<GameBoy, String> {
     let rom_bytes = fs::read(&path)
         .map_err(|error| format!("Failed to read ROM at '{}': {error}", path.display()))?;
 
-    GameBoy::from_rom_bytes(rom_bytes).map_err(|error| format!("Failed to initialize Game Boy core: {error}"))
+    GameBoy::from_rom_bytes(rom_bytes)
+        .map_err(|error| format!("Failed to initialize Game Boy core: {error}"))
 }
 
 fn read_buttons(window: &Window) -> u8 {
@@ -166,7 +262,7 @@ fn read_buttons(window: &Window) -> u8 {
 }
 
 fn trace_enabled() -> bool {
-    env::args().any(|arg| arg == "--uitrace"  || std::env::var_os("GB_TRACE").is_some() )
+    env::args().any(|arg| arg == "--uitrace" || std::env::var_os("GB_TRACE").is_some())
 }
 
 fn render_no_rom_screen(buffer: &mut [u32], width: usize, _height: usize) {
@@ -176,7 +272,14 @@ fn render_no_rom_screen(buffer: &mut [u32], width: usize, _height: usize) {
     draw_text(buffer, width, 12, 80, "ESC TO QUIT", 0x000000FF);
 }
 
-fn draw_text(buffer: &mut [u32], width: usize, start_x: usize, start_y: usize, text: &str, color: u32) {
+fn draw_text(
+    buffer: &mut [u32],
+    width: usize,
+    start_x: usize,
+    start_y: usize,
+    text: &str,
+    color: u32,
+) {
     let mut x = start_x;
 
     for character in text.chars() {

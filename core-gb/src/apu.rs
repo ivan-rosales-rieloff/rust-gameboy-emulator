@@ -19,7 +19,9 @@ const DUTY_PATTERNS: [[u8; 8]; 4] = [
     [0, 1, 1, 1, 1, 1, 1, 0], // 75.0%
 ];
 
-#[derive(Debug, Clone, Default)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct PulseChannel {
     enabled: bool,
     dac_enabled: bool,
@@ -151,7 +153,11 @@ impl PulseChannel {
 
         if self.has_sweep {
             self.shadow_frequency = self.frequency;
-            self.sweep_timer = if self.sweep_period > 0 { self.sweep_period } else { 8 };
+            self.sweep_timer = if self.sweep_period > 0 {
+                self.sweep_period
+            } else {
+                8
+            };
             self.sweep_enabled = self.sweep_period > 0 || self.sweep_shift > 0;
             if self.sweep_shift > 0 && self.calculate_sweep_frequency().is_none() {
                 self.enabled = false;
@@ -173,7 +179,7 @@ impl PulseChannel {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct WaveChannel {
     enabled: bool,
     dac_enabled: bool,
@@ -242,7 +248,7 @@ impl WaveChannel {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct NoiseChannel {
     enabled: bool,
     dac_enabled: bool,
@@ -376,7 +382,7 @@ impl NoiseChannel {
 }
 
 /// The main Audio Processing Unit (APU) containing the synthesis and control state.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Apu {
     channel1: PulseChannel,
     channel2: PulseChannel,
@@ -510,20 +516,36 @@ impl Apu {
         let mut right = 0.0f32;
 
         // Channel 1 Panning
-        if (self.nr51 & 0x10) != 0 { left += ch1; }
-        if (self.nr51 & 0x01) != 0 { right += ch1; }
+        if (self.nr51 & 0x10) != 0 {
+            left += ch1;
+        }
+        if (self.nr51 & 0x01) != 0 {
+            right += ch1;
+        }
 
         // Channel 2 Panning
-        if (self.nr51 & 0x20) != 0 { left += ch2; }
-        if (self.nr51 & 0x02) != 0 { right += ch2; }
+        if (self.nr51 & 0x20) != 0 {
+            left += ch2;
+        }
+        if (self.nr51 & 0x02) != 0 {
+            right += ch2;
+        }
 
         // Channel 3 Panning
-        if (self.nr51 & 0x40) != 0 { left += ch3; }
-        if (self.nr51 & 0x04) != 0 { right += ch3; }
+        if (self.nr51 & 0x40) != 0 {
+            left += ch3;
+        }
+        if (self.nr51 & 0x04) != 0 {
+            right += ch3;
+        }
 
         // Channel 4 Panning
-        if (self.nr51 & 0x80) != 0 { left += ch4; }
-        if (self.nr51 & 0x08) != 0 { right += ch4; }
+        if (self.nr51 & 0x80) != 0 {
+            left += ch4;
+        }
+        if (self.nr51 & 0x08) != 0 {
+            right += ch4;
+        }
 
         // Average output
         left /= 4.0;
@@ -551,19 +573,31 @@ impl Apu {
         match address {
             // Pulse 1 Sweep
             0xFF10 => {
-                let dir = if self.channel1.sweep_direction { 0x08 } else { 0x00 };
+                let dir = if self.channel1.sweep_direction {
+                    0x08
+                } else {
+                    0x00
+                };
                 0x80 | (self.channel1.sweep_period << 4) | dir | self.channel1.sweep_shift
             }
             // Pulse 1 Length/Duty
             0xFF11 => 0x3F | (self.channel1.duty << 6),
             // Pulse 1 Envelope
             0xFF12 => {
-                let dir = if self.channel1.envelope_direction { 0x08 } else { 0x00 };
+                let dir = if self.channel1.envelope_direction {
+                    0x08
+                } else {
+                    0x00
+                };
                 (self.channel1.envelope_initial_volume << 4) | dir | self.channel1.envelope_period
             }
             // Pulse 1 Frequency High / Control
             0xFF14 => {
-                let len_bit = if self.channel1.length_enabled { 0x40 } else { 0x00 };
+                let len_bit = if self.channel1.length_enabled {
+                    0x40
+                } else {
+                    0x00
+                };
                 0xBF | len_bit
             }
 
@@ -571,31 +605,51 @@ impl Apu {
             0xFF16 => 0x3F | (self.channel2.duty << 6),
             // Pulse 2 Envelope
             0xFF17 => {
-                let dir = if self.channel2.envelope_direction { 0x08 } else { 0x00 };
+                let dir = if self.channel2.envelope_direction {
+                    0x08
+                } else {
+                    0x00
+                };
                 (self.channel2.envelope_initial_volume << 4) | dir | self.channel2.envelope_period
             }
             // Pulse 2 Frequency High / Control
             0xFF19 => {
-                let len_bit = if self.channel2.length_enabled { 0x40 } else { 0x00 };
+                let len_bit = if self.channel2.length_enabled {
+                    0x40
+                } else {
+                    0x00
+                };
                 0xBF | len_bit
             }
 
             // Wave Channel DAC
             0xFF1A => {
-                let dac_bit = if self.channel3.dac_enabled { 0x80 } else { 0x00 };
+                let dac_bit = if self.channel3.dac_enabled {
+                    0x80
+                } else {
+                    0x00
+                };
                 0x7F | dac_bit
             }
             // Wave Volume Level
             0xFF1C => 0x9F | (self.channel3.volume_shift << 5),
             // Wave Frequency High / Control
             0xFF1E => {
-                let len_bit = if self.channel3.length_enabled { 0x40 } else { 0x00 };
+                let len_bit = if self.channel3.length_enabled {
+                    0x40
+                } else {
+                    0x00
+                };
                 0xBF | len_bit
             }
 
             // Noise Volume Envelope
             0xFF21 => {
-                let dir = if self.channel4.envelope_direction { 0x08 } else { 0x00 };
+                let dir = if self.channel4.envelope_direction {
+                    0x08
+                } else {
+                    0x00
+                };
                 (self.channel4.envelope_initial_volume << 4) | dir | self.channel4.envelope_period
             }
             // Noise Polynomial Counter (LFSR)
@@ -605,7 +659,11 @@ impl Apu {
             }
             // Noise Control
             0xFF23 => {
-                let len_bit = if self.channel4.length_enabled { 0x40 } else { 0x00 };
+                let len_bit = if self.channel4.length_enabled {
+                    0x40
+                } else {
+                    0x00
+                };
                 0xBF | len_bit
             }
 
@@ -674,7 +732,8 @@ impl Apu {
             }
             // Pulse 1 Frequency High & Trigger
             0xFF14 => {
-                self.channel1.frequency = (self.channel1.frequency & 0x00FF) | ((value as u16 & 0x07) << 8);
+                self.channel1.frequency =
+                    (self.channel1.frequency & 0x00FF) | ((value as u16 & 0x07) << 8);
                 self.channel1.length_enabled = (value & 0x40) != 0;
                 if (value & 0x80) != 0 {
                     self.channel1.trigger();
@@ -702,7 +761,8 @@ impl Apu {
             }
             // Pulse 2 Frequency High & Trigger
             0xFF19 => {
-                self.channel2.frequency = (self.channel2.frequency & 0x00FF) | ((value as u16 & 0x07) << 8);
+                self.channel2.frequency =
+                    (self.channel2.frequency & 0x00FF) | ((value as u16 & 0x07) << 8);
                 self.channel2.length_enabled = (value & 0x40) != 0;
                 if (value & 0x80) != 0 {
                     self.channel2.trigger();
@@ -730,7 +790,8 @@ impl Apu {
             }
             // Wave Frequency High & Trigger
             0xFF1E => {
-                self.channel3.frequency = (self.channel3.frequency & 0x00FF) | ((value as u16 & 0x07) << 8);
+                self.channel3.frequency =
+                    (self.channel3.frequency & 0x00FF) | ((value as u16 & 0x07) << 8);
                 self.channel3.length_enabled = (value & 0x40) != 0;
                 if (value & 0x80) != 0 {
                     self.channel3.trigger();

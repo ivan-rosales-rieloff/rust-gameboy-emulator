@@ -18,6 +18,7 @@ This repository contains a modular emulator written in Rust with separate crates
 - Validate emulation using unit tests and smoke tests in the `core-gb` crate.
 - Support both ROM-only and memory bank controller cartridges (including MBC1 and MBC3 with battery-backed RAM).
 - Save and restore full emulator state to disk using a robust sectioned serialization format.
+- Automatically persist battery-backed RAM to `saves/{title}.catrigestate` with debounced disk writes for safer in-game SAVE behavior.
 - Use TCP-based Game Boy link emulation for server/client serial transfer testing.
 
 ## Key Features
@@ -75,6 +76,8 @@ The desktop frontend connects emulator input and display logic. Typical actions 
 - `Up` / `Down` — Adjust the network port number.
 - `C` — Connect or disconnect the serial link.
 - `Esc` / close window — quit the emulator.
+- `G` — Save current cartridge RAM to chosen .sav file (export save)
+- `U` — Load a chosen .sav into cartridge RAM (import save)
 
 ### Button Definitions
 
@@ -92,7 +95,12 @@ The emulator supports the following Game Boy controls with the desktop frontend 
 ## Notes
 
 - The project is still under active development and may not support every Game Boy instruction or cartridge type yet.
+- Battery-backed save RAM is persisted automatically to `saves/{title}.catrigestate` when supported, with debounced writes to reduce disk I/O.
 - The `core-gb` crate includes smoke tests that verify rendering non-blank frames for known ROMs.
+
+## Disclaimer
+
+This application was developed with the assistance of an AI code assistant.
 
 ## Repository Structure
 

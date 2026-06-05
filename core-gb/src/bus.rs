@@ -302,6 +302,11 @@ impl Bus {
         &self.cartridge
     }
 
+    /// Returns a mutable reference to the cartridge for external access.
+    pub fn cartridge_mut(&mut self) -> &mut Cartridge {
+        &mut self.cartridge
+    }
+
     /// Updates the joypad button state.
     ///
     /// The button state is stored as a bitfield where each bit represents

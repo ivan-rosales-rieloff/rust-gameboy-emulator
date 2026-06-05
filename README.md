@@ -17,16 +17,17 @@ This repository contains a modular emulator written in Rust with separate crates
 - Boot and render supported games, including Pokemon Red.
 - Validate emulation using unit tests and smoke tests in the `core-gb` crate.
 - Support both ROM-only and memory bank controller cartridges (including MBC1 and MBC3 with battery-backed RAM).
-- Save and restore full emulator state to disk.
+- Save and restore full emulator state to disk using a robust sectioned serialization format.
 - Use TCP-based Game Boy link emulation for server/client serial transfer testing.
 
 ## Key Features
 
 - CPU execution for the Game Boy instruction set.
 - PPU rendering of background and sprites to a framebuffer.
-- Cartridge banking and save RAM support.
-- OAM DMA handling and VBlank interrupt generation.
-- Desktop frontend that loads ROM files and displays the emulator screen.
+- Cartridge banking and battery-backed save RAM support.
+- Safe save/load of emulator state with threaded state decoding to avoid large state stack overflow.
+- Desktop frontend that loads ROM files, displays output, and supports serialized state persistence.
+- TCP link mode for serial port emulation between two running instances.
 
 ## App Actions
 
@@ -34,8 +35,10 @@ The frontend app allows you to:
 
 - Load a Game Boy ROM file.
 - Run the emulation loop and render frames.
+- Save and load full emulator state files.
 - Exit cleanly and save battery-backed RAM when supported.
 - Use configured gamepad or keyboard input through the frontend inputs.
+- Configure TCP serial link mode as server or client for linked emulation.
 
 ## Build & Run
 
@@ -71,6 +74,7 @@ The desktop frontend connects emulator input and display logic. Typical actions 
 - `H` — Cycle host target (`127.0.0.1`, `localhost`, `0.0.0.0`).
 - `Up` / `Down` — Adjust the network port number.
 - `C` — Connect or disconnect the serial link.
+- `Esc` / close window — quit the emulator.
 
 ### Button Definitions
 

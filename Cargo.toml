@@ -3,6 +3,6 @@ members = [
     "core-common",
     "core-gb",
     "core-gba",
-    "frontend-desktop",
+    "frontend-desktop", "tmp_repro", "tmp_state_repro",
 ]
 resolver = "2"

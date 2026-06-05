@@ -47,6 +47,7 @@ mod bus;
 mod cartridge;
 mod cpu;
 mod ppu;
+mod serde_array;
 mod trace;
 
 use std::error::Error;
@@ -55,6 +56,7 @@ use std::fs;
 use std::path::Path;
 
 use bus::Bus;
+use serde::de::DeserializeOwned;
 pub use cartridge::{Cartridge, CartridgeError};
 use core_common::{HeadlessCore, RunStats, StepResult, run_steps};
 use cpu::{Cpu, CpuError};
@@ -87,6 +89,38 @@ pub struct GameBoy {
     ppu: Ppu,
     /// Total CPU cycles executed since emulator start (for performance tracking)
     cycles: u64,
+}
+
+fn encode_section<T: serde::Serialize>(value: &T, config: impl bincode::config::Config, bytes: &mut Vec<u8>) -> Result<(), GameBoyError> {
+    let section = bincode::serde::encode_to_vec(value, config)
+        .map_err(|e| GameBoyError::StateSerialization(e.to_string()))?;
+    let len = section.len() as u64;
+    bytes.extend(&len.to_le_bytes());
+    bytes.extend(section);
+    Ok(())
+}
+
+fn decode_section<T: DeserializeOwned>(src: &mut &[u8], config: impl bincode::config::Config) -> Result<T, GameBoyError> {
+    if src.len() < 8 {
+        return Err(GameBoyError::StateSerialization("state file is truncated".to_string()));
+    }
+
+    let len_bytes: [u8; 8] = src[..8].try_into().unwrap();
+    let section_len = u64::from_le_bytes(len_bytes) as usize;
+    *src = &src[8..];
+
+    if src.len() < section_len {
+        return Err(GameBoyError::StateSerialization("state file is truncated".to_string()));
+    }
+
+    let (value, consumed) = bincode::serde::decode_from_slice::<T, _>(&src[..section_len], config)
+        .map_err(|e| GameBoyError::StateSerialization(e.to_string()))?;
+    if consumed != section_len {
+        return Err(GameBoyError::StateSerialization("state section size mismatch".to_string()));
+    }
+
+    *src = &src[section_len..];
+    Ok(value)
 }
 
 impl GameBoy {
@@ -241,19 +275,46 @@ impl GameBoy {
 
     /// Saves the current emulator state to a file.
     pub fn save_state<P: AsRef<Path>>(&self, path: P) -> Result<(), GameBoyError> {
-        let bytes = bincode::serde::encode_to_vec(self, bincode::config::standard())
-            .map_err(|e| GameBoyError::StateSerialization(e.to_string()))?;
+        let config = bincode::config::standard();
+        let mut bytes = Vec::new();
+
+        encode_section(&self.cpu, config, &mut bytes)?;
+        encode_section(&self.bus, config, &mut bytes)?;
+        encode_section(&self.ppu, config, &mut bytes)?;
+        encode_section(&self.cycles, config, &mut bytes)?;
+
         fs::write(path, bytes).map_err(|e| GameBoyError::StateIo(e))
+    }
+
+    fn decode_state_bytes(bytes: Vec<u8>) -> Result<Box<Self>, GameBoyError> {
+        let config = bincode::config::standard();
+        let mut slice = bytes.as_slice();
+
+        let cpu: Cpu = decode_section(&mut slice, config)?;
+        let bus: Bus = decode_section(&mut slice, config)?;
+        let ppu: Ppu = decode_section(&mut slice, config)?;
+        let cycles: u64 = decode_section(&mut slice, config)?;
+
+        let mut state = Self { cpu, bus, ppu, cycles };
+        state.bus.disconnect_link();
+        Ok(Box::new(state))
     }
 
     /// Loads a saved emulator state from a file.
     pub fn load_state<P: AsRef<Path>>(path: P) -> Result<Self, GameBoyError> {
         let bytes = fs::read(path).map_err(|e| GameBoyError::StateIo(e))?;
-        let (mut state, _) =
-            bincode::serde::decode_from_slice::<Self, _>(&bytes, bincode::config::standard())
-                .map_err(|e| GameBoyError::StateSerialization(e.to_string()))?;
-        state.bus.disconnect_link();
-        Ok(state)
+
+        let handle = std::thread::Builder::new()
+            .name("state-load".to_string())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || Self::decode_state_bytes(bytes))
+            .map_err(|e| GameBoyError::StateSerialization(e.to_string()))?;
+
+        let state = handle
+            .join()
+            .map_err(|_| GameBoyError::StateSerialization("state load thread panicked".to_string()))??;
+
+        Ok(*state)
     }
 
     /// Connects a serial link endpoint to the emulator.
@@ -357,6 +418,63 @@ impl From<CartridgeError> for GameBoyError {
 impl From<CpuError> for GameBoyError {
     fn from(value: CpuError) -> Self {
         Self::Cpu(value)
+    }
+}
+
+#[cfg(test)]
+mod test_serialization {
+    use super::*;
+    use crate::apu::Apu;
+    use crate::bus::Bus;
+    use crate::ppu::Ppu;
+    use bincode;
+
+    #[test]
+    fn serialize_and_deserialize_ppu() {
+        let ppu = Ppu::default();
+        let encoded = bincode::serde::encode_to_vec(&ppu, bincode::config::standard()).expect("encode ppu");
+        let (_decoded, _) = bincode::serde::decode_from_slice::<Ppu, _>(&encoded, bincode::config::standard()).expect("decode ppu");
+        drop(_decoded);
+    }
+
+    #[test]
+    fn serialize_and_deserialize_apu() {
+        let apu = Apu::default();
+        let encoded = bincode::serde::encode_to_vec(&apu, bincode::config::standard()).expect("encode apu");
+        let (_decoded, _) = bincode::serde::decode_from_slice::<Apu, _>(&encoded, bincode::config::standard()).expect("decode apu");
+        drop(_decoded);
+    }
+
+    #[test]
+    fn serialize_and_deserialize_cpu() {
+        let cpu = crate::cpu::Cpu::default();
+        let encoded = bincode::serde::encode_to_vec(&cpu, bincode::config::standard()).expect("encode cpu");
+        let (_decoded, _) = bincode::serde::decode_from_slice::<crate::cpu::Cpu, _>(&encoded, bincode::config::standard()).expect("decode cpu");
+        drop(_decoded);
+    }
+
+    #[test]
+    fn serialize_and_deserialize_bus() {
+        let rom = vec![0u8; 0x8000];
+        let cartridge = crate::cartridge::Cartridge::from_rom(rom).expect("create cartridge");
+        let bus = Bus::new(cartridge);
+        let encoded = bincode::serde::encode_to_vec(&bus, bincode::config::standard()).expect("encode bus");
+        let (_decoded, _) = bincode::serde::decode_from_slice::<Bus, _>(&encoded, bincode::config::standard()).expect("decode bus");
+        drop(_decoded);
+    }
+
+
+    #[test]
+    fn serialize_and_deserialize_gameboy_default() {
+        let mut rom = vec![0u8; 0x8000];
+        rom[0x0147] = 0x00;
+        rom[0x0100] = 0x00;
+        let gb = GameBoy::from_rom_bytes(rom).expect("create gameboy");
+
+        let path = std::env::temp_dir().join("gameboy_state_test.state");
+        gb.save_state(&path).expect("save state");
+        let loaded = GameBoy::load_state(&path).expect("load state");
+        assert_eq!(gb.total_cycles(), loaded.total_cycles());
     }
 }
 
@@ -498,7 +616,7 @@ mod tests {
 
     #[test]
     fn debug_pokemon_red_lcdc_initialization() {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../PokemonRed.gb");
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("/tools/bgbw64/Pokemon Red.gb");
         let rom = std::fs::read(&path).unwrap();
         let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
 
@@ -523,7 +641,7 @@ mod tests {
 
     #[test]
     fn trace_pokemon_red_initial_instructions() {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../PokemonRed.gb");
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("/tools/bgbw64/Pokemon Red.gb");
         let rom = std::fs::read(&path).unwrap();
         let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
 

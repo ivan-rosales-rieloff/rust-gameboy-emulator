@@ -497,24 +497,25 @@ impl Cartridge {
     }
 
     /// Persist current RAM to the cartridge-state file used by the frontend.
-    fn persist_cartridge_state(&self) -> Result<(), CartridgeError> {
-        if !self.has_battery || self.ram.is_empty() {
-            return Ok(());
-        }
+    /// deprecated: use `persist_snapshot` instead with a provided RAM snapshot.
+    // fn persist_cartridge_state(&self) -> Result<(), CartridgeError> {
+    //     if !self.has_battery || self.ram.is_empty() {
+    //         return Ok(());
+    //     }
 
-        let saves_dir = std::path::Path::new("saves");
-        std::fs::create_dir_all(saves_dir).map_err(|e| CartridgeError::SaveError {
-            path: saves_dir.display().to_string(),
-            error: e.to_string(),
-        })?;
+    //     let saves_dir = std::path::Path::new("saves");
+    //     std::fs::create_dir_all(saves_dir).map_err(|e| CartridgeError::SaveError {
+    //         path: saves_dir.display().to_string(),
+    //         error: e.to_string(),
+    //     })?;
 
-        let state_path = saves_dir.join(format!("{}.catrigestate", self.title));
-        let p = state_path.display().to_string();
-        std::fs::write(&state_path, &self.ram).map_err(|e| CartridgeError::SaveError {
-            path: p,
-            error: e.to_string(),
-        })
-    }
+    //     let state_path = saves_dir.join(format!("{}.catrigestate", self.title));
+    //     let p = state_path.display().to_string();
+    //     std::fs::write(&state_path, &self.ram).map_err(|e| CartridgeError::SaveError {
+    //         path: p,
+    //         error: e.to_string(),
+    //     })
+    // }
 
     /// Persist a provided RAM snapshot to cartridge-state file (used by debounced save tasks).
     fn persist_snapshot(title: &str, snapshot: &[u8]) -> Result<(), CartridgeError> {

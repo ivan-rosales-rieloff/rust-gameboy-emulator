@@ -10,3 +10,4 @@ target/
 *.gbc
 *.gba
 *.zip
+*.catridgestate

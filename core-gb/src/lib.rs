@@ -431,6 +431,20 @@ mod test_serialization {
             .expect("borrow decode gameboy");
         drop(_decoded);
     }
+
+    #[test]
+    fn serialize_and_deserialize_gameboy_default() {
+        let mut rom = vec![0u8; 0x8000];
+        rom[0x0147] = 0x00;
+        rom[0x0100] = 0x00;
+        let gb = GameBoy::from_rom_bytes(rom).expect("create gameboy");
+
+        let encoded = bincode::serde::encode_to_vec(&gb, bincode::config::standard())
+            .expect("encode gameboy");
+        let (_decoded, _) = bincode::serde::decode_from_slice::<GameBoy, _>(&encoded, bincode::config::standard())
+            .expect("decode gameboy");
+        drop(_decoded);
+    }
 }
 
 #[cfg(test)]

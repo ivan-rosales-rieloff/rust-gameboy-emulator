@@ -101,6 +101,35 @@ fn main() {
             }
         }
 
+        // Save cartridge-backed game (battery save) to chosen file
+        if window.is_key_pressed(Key::G, minifb::KeyRepeat::No) {
+            if let Some(game) = &game_boy {
+                if let Some(path) = FileDialog::new()
+                    .add_filter("Game Save", &["sav"])
+                    .save_file()
+                {
+                    if let Err(error) = game.save_game_to(path) {
+                        eprintln!("Failed to save game: {error}");
+                    } else {
+                        println!("Game save written to chosen path");
+                    }
+                }
+            }
+        }
+
+        // Load a chosen .sav into the cartridge RAM
+        if window.is_key_pressed(Key::U, minifb::KeyRepeat::No) {
+            if let Some(game) = &mut game_boy {
+                if let Some(path) = FileDialog::new().add_filter("Game Save", &["sav"]).pick_file() {
+                    if let Err(error) = game.load_game_from(path) {
+                        eprintln!("Failed to load game save: {error}");
+                    } else {
+                        println!("Game save loaded into cartridge RAM");
+                    }
+                }
+            }
+        }
+
         if window.is_key_pressed(Key::O, minifb::KeyRepeat::No) {
             if let Some(path) = FileDialog::new()
                 .add_filter("Game Boy State", &["state", "sav"])

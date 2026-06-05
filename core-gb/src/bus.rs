@@ -85,9 +85,9 @@
 
 use crate::cartridge::Cartridge;
 use crate::trace::{trace, trace_enabled};
+use crate::serde_array;
 use core_common::LinkEndpoint;
 use serde::{Deserialize, Serialize};
-use serde_big_array::BigArray;
 
 // Memory region sizes (in bytes)
 const VRAM_SIZE: usize = 0x4000; // 16KB Video RAM (2 banks of 8KB for GBC)
@@ -113,19 +113,19 @@ pub struct Bus {
     /// The game cartridge with ROM and optional RAM
     cartridge: Cartridge,
     /// Video RAM for tile data and background/window maps
-    #[serde(with = "BigArray")]
+    #[serde(with = "serde_array")]
     vram: [u8; VRAM_SIZE],
     /// Working RAM for game variables and stack
-    #[serde(with = "BigArray")]
+    #[serde(with = "serde_array")]
     wram: [u8; WRAM_SIZE],
     /// Object Attribute Memory for sprite properties
-    #[serde(with = "BigArray")]
+    #[serde(with = "serde_array")]
     oam: [u8; OAM_SIZE],
     /// I/O registers for hardware control
-    #[serde(with = "BigArray")]
+    #[serde(with = "serde_array")]
     io: [u8; IO_SIZE],
     /// High RAM for fast variable access
-    #[serde(with = "BigArray")]
+    #[serde(with = "serde_array")]
     hram: [u8; HRAM_SIZE],
     /// Interrupt Enable register (separate for easier access)
     ie: u8,
@@ -156,10 +156,10 @@ pub struct Bus {
     /// GBC WRAM bank selector (0xFF70)
     pub svbk: u8,
     /// GBC Background Palette Memory (64 bytes, 8 palettes x 4 colors x 2 bytes)
-    #[serde(with = "BigArray")]
+    #[serde(with = "serde_array")]
     pub bg_palette_ram: [u8; 64],
     /// GBC Sprite Palette Memory (64 bytes, 8 palettes x 4 colors x 2 bytes)
-    #[serde(with = "BigArray")]
+    #[serde(with = "serde_array")]
     pub sp_palette_ram: [u8; 64],
     /// GBC Background Palette Index Register (0xFF68)
     pub bg_palette_idx: u8,
@@ -300,6 +300,11 @@ impl Bus {
     /// Returns a reference to the cartridge for external access.
     pub fn cartridge(&self) -> &Cartridge {
         &self.cartridge
+    }
+
+    /// Returns a mutable reference to the cartridge for external access.
+    pub fn cartridge_mut(&mut self) -> &mut Cartridge {
+        &mut self.cartridge
     }
 
     /// Updates the joypad button state.

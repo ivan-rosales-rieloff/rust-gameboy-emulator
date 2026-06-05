@@ -74,6 +74,8 @@ use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::time::Duration;
 
 /// Minimum valid ROM size (32KB - two 16KB banks)
 const MIN_ROM_SIZE: usize = 0x8000;
@@ -144,6 +146,12 @@ pub struct Cartridge {
 
     /// Whether this cartridge is GBC-compatible (based on 0x0143 byte)
     is_cgb: bool,
+    /// Debounce interval for auto-saving battery-backed RAM (skipped for serde)
+    #[serde(skip)]
+    save_debounce_ms: Duration,
+    /// Counter to coordinate debounced save tasks (skipped for serde)
+    #[serde(skip)]
+    save_counter: Arc<AtomicU64>,
 }
 
 impl Cartridge {
@@ -233,6 +241,8 @@ impl Cartridge {
             ram_enabled: false,     // RAM starts disabled
             has_battery,
             is_cgb,
+            save_debounce_ms: Duration::from_millis(500),
+            save_counter: Arc::new(AtomicU64::new(0)),
         };
 
         // Load save file if battery-backed RAM is supported
@@ -462,11 +472,68 @@ impl Cartridge {
                 let offset = usize::from(bank) * RAM_BANK_SIZE + usize::from(address - 0xA000);
 
                 // Write to RAM if address is valid
-                if let Some(slot) = self.ram.get_mut(offset) {
-                    *slot = value;
-                }
+                    if let Some(slot) = self.ram.get_mut(offset) {
+                        *slot = value;
+                        // Debounced persist: snapshot RAM and schedule a save task
+                        if self.has_battery {
+                            // Increment counter to indicate a new write batch
+                            let current = self.save_counter.fetch_add(1, Ordering::SeqCst) + 1;
+                            let counter = self.save_counter.clone();
+                            let debounce = self.save_debounce_ms;
+                            let title = self.title.clone();
+                            let snapshot = self.ram.clone();
+
+                            std::thread::spawn(move || {
+                                std::thread::sleep(debounce);
+                                // Only write if no newer writes occurred
+                                if counter.load(Ordering::SeqCst) == current {
+                                    let _ = Cartridge::persist_snapshot(&title, &snapshot);
+                                }
+                            });
+                        }
+                    }
             }
         }
+    }
+
+    /// Persist current RAM to the cartridge-state file used by the frontend.
+    fn persist_cartridge_state(&self) -> Result<(), CartridgeError> {
+        if !self.has_battery || self.ram.is_empty() {
+            return Ok(());
+        }
+
+        let saves_dir = std::path::Path::new("saves");
+        std::fs::create_dir_all(saves_dir).map_err(|e| CartridgeError::SaveError {
+            path: saves_dir.display().to_string(),
+            error: e.to_string(),
+        })?;
+
+        let state_path = saves_dir.join(format!("{}.catrigestate", self.title));
+        let p = state_path.display().to_string();
+        std::fs::write(&state_path, &self.ram).map_err(|e| CartridgeError::SaveError {
+            path: p,
+            error: e.to_string(),
+        })
+    }
+
+    /// Persist a provided RAM snapshot to cartridge-state file (used by debounced save tasks).
+    fn persist_snapshot(title: &str, snapshot: &[u8]) -> Result<(), CartridgeError> {
+        if snapshot.is_empty() {
+            return Ok(());
+        }
+
+        let saves_dir = std::path::Path::new("saves");
+        std::fs::create_dir_all(saves_dir).map_err(|e| CartridgeError::SaveError {
+            path: saves_dir.display().to_string(),
+            error: e.to_string(),
+        })?;
+
+        let state_path = saves_dir.join(format!("{}.catrigestate", title));
+        let p = state_path.display().to_string();
+        std::fs::write(&state_path, snapshot).map_err(|e| CartridgeError::SaveError {
+            path: p,
+            error: e.to_string(),
+        })
     }
 
     /// Returns the game title from the cartridge header.
@@ -497,11 +564,69 @@ impl Cartridge {
             return Ok(()); // No save needed
         }
 
-        let save_path = format!("{}.sav", self.title);
+        // Default save directory: "saves/" in current working dir
+        let saves_dir = std::path::Path::new("saves");
+        if let Err(e) = std::fs::create_dir_all(saves_dir) {
+            return Err(CartridgeError::SaveError {
+                path: saves_dir.display().to_string(),
+                error: e.to_string(),
+            });
+        }
+
+        let save_path = saves_dir.join(format!("{}.sav", self.title));
+        let save_path_str = save_path.display().to_string();
         fs::write(&save_path, &self.ram).map_err(|e| CartridgeError::SaveError {
-            path: save_path,
+            path: save_path_str,
             error: e.to_string(),
         })
+    }
+
+    /// Saves the current RAM contents to the specified path.
+    pub fn save_game_to<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), CartridgeError> {
+        if !self.has_battery || self.ram.is_empty() {
+            return Ok(());
+        }
+
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return Err(CartridgeError::SaveError {
+                    path: parent.display().to_string(),
+                    error: e.to_string(),
+                });
+            }
+        }
+
+        let save_path_str = path.display().to_string();
+        fs::write(path, &self.ram).map_err(|e| CartridgeError::SaveError {
+            path: save_path_str,
+            error: e.to_string(),
+        })
+    }
+
+    /// Loads RAM contents from the specified save file path into cartridge RAM.
+    /// Returns an error if file cannot be read or size doesn't match.
+    pub fn load_game_from<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<(), CartridgeError> {
+        if !self.has_battery || self.ram.is_empty() {
+            return Ok(());
+        }
+
+        let path = path.as_ref();
+        let save_path_str = path.display().to_string();
+        let data = std::fs::read(path).map_err(|e| CartridgeError::LoadError {
+            path: save_path_str.clone(),
+            error: e.to_string(),
+        })?;
+
+        if data.len() != self.ram.len() {
+            return Err(CartridgeError::LoadError {
+                path: save_path_str,
+                error: format!("save size {} does not match cartridge RAM size {}", data.len(), self.ram.len()),
+            });
+        }
+
+        self.ram.copy_from_slice(&data);
+        Ok(())
     }
 
     /// Loads save data from a save file into RAM.
@@ -513,9 +638,18 @@ impl Cartridge {
             return; // No save file expected
         }
 
-        let save_path = format!("{}.sav", self.title);
+        // Prefer the cartridge-state file used by the frontend for load/save
+        let state_path = std::path::Path::new("saves").join(format!("{}.catrigestate", self.title));
+        if let Ok(save_data) = fs::read(&state_path) {
+            if save_data.len() == self.ram.len() {
+                self.ram.copy_from_slice(&save_data);
+                return;
+            }
+        }
+
+        // Fallback to legacy .sav files for compatibility
+        let save_path = std::path::Path::new("saves").join(format!("{}.sav", self.title));
         if let Ok(save_data) = fs::read(&save_path) {
-            // Only load if save file size matches our RAM size (prevents corruption)
             if save_data.len() == self.ram.len() {
                 self.ram.copy_from_slice(&save_data);
             }
@@ -535,6 +669,8 @@ pub enum CartridgeError {
 
     /// Failed to save game data to file
     SaveError { path: String, error: String },
+    /// Failed to load game data from file
+    LoadError { path: String, error: String },
 }
 
 impl Display for CartridgeError {
@@ -554,6 +690,9 @@ impl Display for CartridgeError {
             }
             Self::SaveError { path, error } => {
                 write!(f, "failed to save game to '{}': {}", path, error)
+            }
+            Self::LoadError { path, error } => {
+                write!(f, "failed to load game from '{}': {}", path, error)
             }
         }
     }

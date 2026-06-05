@@ -64,6 +64,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "bincode"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
+dependencies = [
+ "bincode_derive",
+ "serde",
+ "unty",
+]
+
+[[package]]
+name = "bincode_derive"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf95709a440f45e986983918d0e8a1f30a9b1df04918fc828670606804ac3c09"
+dependencies = [
+ "virtue",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -217,7 +237,10 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 name = "core-gb"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "core-common",
+ "serde",
+ "serde-big-array",
 ]
 
 [[package]]
@@ -350,6 +373,7 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 name = "frontend-desktop"
 version = "0.1.0"
 dependencies = [
+ "core-common",
  "core-gb",
  "minifb",
  "rfd",
@@ -1239,6 +1263,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-big-array"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd31f59f6fe2b0c055371bb2f16d7f0aa7d8881676c04a55b1596d1a17cd10a4"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1502,6 +1535,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
+name = "unty"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
+
+[[package]]
 name = "version-compare"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1512,6 +1551,12 @@ name = "version-compare"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03c2856837ef78f57382f06b2b8563a2f512f7185d732608fd9176cb3b8edf0e"
+
+[[package]]
+name = "virtue"
+version = "0.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "walkdir"

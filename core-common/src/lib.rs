@@ -1,3 +1,7 @@
+mod link;
+
+pub use link::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StepResult {
     pub cycles: u32,

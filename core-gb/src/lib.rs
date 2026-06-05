@@ -51,12 +51,15 @@ mod trace;
 
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::fs;
+use std::path::Path;
 
 use bus::Bus;
-use core_common::{run_steps, HeadlessCore, RunStats, StepResult};
+pub use cartridge::{Cartridge, CartridgeError};
+use core_common::{HeadlessCore, RunStats, StepResult, run_steps};
 use cpu::{Cpu, CpuError};
 use ppu::{Ppu, SCREEN_HEIGHT, SCREEN_WIDTH};
-pub use cartridge::{Cartridge, CartridgeError};
+use serde::{Deserialize, Serialize};
 
 pub use cpu::Registers;
 
@@ -74,7 +77,7 @@ pub use cpu::Registers;
 ///
 /// This ensures that CPU and PPU stay synchronized, which is crucial for
 /// proper graphics timing and interrupt handling.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GameBoy {
     /// The central processing unit that executes Game Boy instructions
     cpu: Cpu,
@@ -236,6 +239,38 @@ impl GameBoy {
         self.bus.cartridge().has_battery()
     }
 
+    /// Saves the current emulator state to a file.
+    pub fn save_state<P: AsRef<Path>>(&self, path: P) -> Result<(), GameBoyError> {
+        let bytes = bincode::serde::encode_to_vec(self, bincode::config::standard())
+            .map_err(|e| GameBoyError::StateSerialization(e.to_string()))?;
+        fs::write(path, bytes).map_err(|e| GameBoyError::StateIo(e))
+    }
+
+    /// Loads a saved emulator state from a file.
+    pub fn load_state<P: AsRef<Path>>(path: P) -> Result<Self, GameBoyError> {
+        let bytes = fs::read(path).map_err(|e| GameBoyError::StateIo(e))?;
+        let (mut state, _) =
+            bincode::serde::decode_from_slice::<Self, _>(&bytes, bincode::config::standard())
+                .map_err(|e| GameBoyError::StateSerialization(e.to_string()))?;
+        state.bus.disconnect_link();
+        Ok(state)
+    }
+
+    /// Connects a serial link endpoint to the emulator.
+    pub fn connect_link(&mut self, link: Box<dyn core_common::LinkEndpoint + Send>) {
+        self.bus.connect_link(link);
+    }
+
+    /// Disconnects the current serial link endpoint.
+    pub fn disconnect_link(&mut self) {
+        self.bus.disconnect_link();
+    }
+
+    /// Returns true if a serial link endpoint is connected.
+    pub fn has_link(&self) -> bool {
+        self.bus.has_link()
+    }
+
     /// Returns true if interrupts are globally enabled (IME flag).
     ///
     /// The Game Boy has a master interrupt enable flag that can disable
@@ -286,6 +321,10 @@ pub enum GameBoyError {
     Cartridge(CartridgeError),
     /// Errors from CPU execution (invalid opcodes, etc.)
     Cpu(CpuError),
+    /// Errors during state save/load operations
+    StateIo(std::io::Error),
+    /// Errors during state serialization or deserialization
+    StateSerialization(String),
 }
 
 impl Display for GameBoyError {
@@ -293,6 +332,8 @@ impl Display for GameBoyError {
         match self {
             Self::Cartridge(error) => write!(f, "cartridge error: {error}"),
             Self::Cpu(error) => write!(f, "cpu error: {error}"),
+            Self::StateIo(error) => write!(f, "state I/O error: {error}"),
+            Self::StateSerialization(error) => write!(f, "state serialization error: {error}"),
         }
     }
 }
@@ -424,8 +465,7 @@ mod tests {
             0x76, // HALT
         ];
         let bank1_data = 0x99;
-        rom[0x0100..0x0100 + switch_bank_program.len()]
-            .copy_from_slice(&switch_bank_program);
+        rom[0x0100..0x0100 + switch_bank_program.len()].copy_from_slice(&switch_bank_program);
         rom[0x4000] = bank1_data;
 
         let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
@@ -471,7 +511,13 @@ mod tests {
             let framebuffer = game_boy.framebuffer();
             let min = *framebuffer.iter().min().unwrap();
             let max = *framebuffer.iter().max().unwrap();
-            println!("frame={} pc=0x{:04X} lcdc=0x{lcdc:02X} scy=0x{scroll_y:02X} scx=0x{scroll_x:02X} pal=0x{palette:02X} min={} max={}", frame, game_boy.pc(), min, max);
+            println!(
+                "frame={} pc=0x{:04X} lcdc=0x{lcdc:02X} scy=0x{scroll_y:02X} scx=0x{scroll_x:02X} pal=0x{palette:02X} min={} max={}",
+                frame,
+                game_boy.pc(),
+                min,
+                max
+            );
         }
     }
 
@@ -509,7 +555,10 @@ mod tests {
                 let framebuffer = game_boy.framebuffer();
                 let min = *framebuffer.iter().min().unwrap();
                 let max = *framebuffer.iter().max().unwrap();
-                println!("frame={} pc=0x{:04X} lcdc=0x{lcdc:02X} pal=0x{palette:02X} min={} max={}", frame, pc, min, max);
+                println!(
+                    "frame={} pc=0x{:04X} lcdc=0x{lcdc:02X} pal=0x{palette:02X} min={} max={}",
+                    frame, pc, min, max
+                );
             }
         }
 
@@ -526,7 +575,10 @@ mod tests {
             let framebuffer = game_boy.framebuffer();
             let min = *framebuffer.iter().min().unwrap();
             let max = *framebuffer.iter().max().unwrap();
-            println!("frame={} pc=0x{:04X} lcdc=0x{lcdc:02X} pal=0x{palette:02X} min={} max={}", frame, pc, min, max);
+            println!(
+                "frame={} pc=0x{:04X} lcdc=0x{lcdc:02X} pal=0x{palette:02X} min={} max={}",
+                frame, pc, min, max
+            );
         }
     }
 
@@ -586,10 +638,10 @@ mod tests {
         let rom = make_rom(
             &[
                 0x3E, 0x85, // LD A,$85 (binary 1000 0101)
-                0x37,       // SCF (set carry flag)
-                0x17,       // RLA (A becomes 0000 1011 = 0x0B, carry becomes 1)
-                0x1F,       // RRA (A becomes 1000 0101 = 0x85, carry becomes 1)
-                0x76,       // HALT
+                0x37, // SCF (set carry flag)
+                0x17, // RLA (A becomes 0000 1011 = 0x0B, carry becomes 1)
+                0x1F, // RRA (A becomes 1000 0101 = 0x85, carry becomes 1)
+                0x76, // HALT
             ],
             0x00,
             "ROTATES",

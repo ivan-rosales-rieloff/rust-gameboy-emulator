@@ -14,9 +14,9 @@
 //! set GB_TRACE_FILE=trace.log
 //! ```
 
-use std::sync::{OnceLock, Mutex};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::sync::{Mutex, OnceLock};
 
 static GB_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
 static TRACE_FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
@@ -31,26 +31,18 @@ pub fn trace_enabled() -> bool {
 /// This is called automatically on first trace() call.
 /// Returns true if file was successfully initialized or doesn't need to be.
 fn init_trace_file() -> bool {
-    TRACE_FILE.get_or_init(|| {
-        match std::env::var("GB_TRACE_FILE") {
-            Ok(path) => {
-                match OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                {
-                    Ok(file) => {
-                        eprintln!("[GB TRACE] Logging to file: {}", path);
-                        Some(Mutex::new(file))
-                    }
-                    Err(e) => {
-                        eprintln!("[GB TRACE] Failed to open trace file '{}': {}", path, e);
-                        None
-                    }
-                }
+    TRACE_FILE.get_or_init(|| match std::env::var("GB_TRACE_FILE") {
+        Ok(path) => match OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(file) => {
+                eprintln!("[GB TRACE] Logging to file: {}", path);
+                Some(Mutex::new(file))
             }
-            Err(_) => None,
-        }
+            Err(e) => {
+                eprintln!("[GB TRACE] Failed to open trace file '{}': {}", path, e);
+                None
+            }
+        },
+        Err(_) => None,
     });
     true
 }

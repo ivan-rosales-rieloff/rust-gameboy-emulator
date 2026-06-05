@@ -84,8 +84,8 @@
 
 use crate::bus::Bus;
 use crate::trace::{trace, trace_enabled};
+use crate::serde_array;
 use serde::{Deserialize, Serialize};
-use serde_big_array::BigArray;
 
 /// Game Boy screen dimensions in pixels
 pub const SCREEN_WIDTH: usize = 160;
@@ -103,7 +103,7 @@ pub const SCREEN_HEIGHT: usize = 144;
 pub struct Ppu {
     /// The final rendered image (160x144 pixels, 1 byte per pixel)
     /// Each pixel contains a palette index (0-3) representing shade
-    #[serde(with = "BigArray")]
+    #[serde(with = "serde_array")]
     pub framebuffer: [u8; SCREEN_WIDTH * SCREEN_HEIGHT],
 
     /// Cycle counter for timing scanline progression

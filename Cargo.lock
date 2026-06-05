@@ -240,7 +240,6 @@ dependencies = [
  "bincode",
  "core-common",
  "serde",
- "serde-big-array",
 ]
 
 [[package]]

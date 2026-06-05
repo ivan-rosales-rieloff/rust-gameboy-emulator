@@ -9,14 +9,14 @@ fn main() {
     let (_decoded_cart, _) = bincode::serde::decode_from_slice::<Cartridge, _>(&encoded_cart, bincode::config::standard()).expect("decode cartridge");
     println!("Cartridge decode OK");
 
-    println!("Testing GameBoy decode...");
+    println!("Testing GameBoy save/load state...");
     let mut rom = vec![0u8; 0x8000];
     rom[0x0147] = 0x00;
     rom[0x0100] = 0x00;
-    let mut gb = GameBoy::from_rom_bytes(rom).expect("create gameboy");
-    gb.run_steps(1000).expect("run steps");
-    let encoded_gb = bincode::serde::encode_to_vec(&gb, bincode::config::standard()).expect("encode gb");
-    let (_decoded_gb, _) = bincode::serde::decode_from_slice::<GameBoy, _>(&encoded_gb, bincode::config::standard()).expect("decode gb");
-    println!("GameBoy decode OK");
+    let gb = GameBoy::from_rom_bytes(rom).expect("create gameboy");
+    let path = std::env::temp_dir().join("gameboy_state_repro.state");
+    gb.save_state(&path).expect("save state");
+    let _loaded_gb = GameBoy::load_state(&path).expect("load state");
+    println!("GameBoy save/load state OK");
 }
 

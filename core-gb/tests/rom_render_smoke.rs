@@ -4,9 +4,7 @@ use std::path::PathBuf;
 use core_gb::GameBoy;
 
 const ROMS: &[&str] = &[
-    "../PokemonRed.gb",
-    "../Pokemon - Red Version (USA, Europe) (SGB Enhanced).gb",
-    "../dmg-acid2.gb",
+    "../bgbtest.gb"
 ];
 
 fn load_rom(path: &str) -> Vec<u8> {

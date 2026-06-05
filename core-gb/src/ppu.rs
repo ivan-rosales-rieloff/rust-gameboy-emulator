@@ -84,6 +84,8 @@
 
 use crate::bus::Bus;
 use crate::trace::{trace, trace_enabled};
+use serde::{Deserialize, Serialize};
+use serde_big_array::BigArray;
 
 /// Game Boy screen dimensions in pixels
 pub const SCREEN_WIDTH: usize = 160;
@@ -97,10 +99,11 @@ pub const SCREEN_HEIGHT: usize = 144;
 /// - Color palette application
 /// - LCD timing and interrupt generation
 /// - Framebuffer management
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ppu {
     /// The final rendered image (160x144 pixels, 1 byte per pixel)
     /// Each pixel contains a palette index (0-3) representing shade
+    #[serde(with = "BigArray")]
     pub framebuffer: [u8; SCREEN_WIDTH * SCREEN_HEIGHT],
 
     /// Cycle counter for timing scanline progression
@@ -150,8 +153,8 @@ impl Ppu {
         self.cycle_counter = self.cycle_counter.wrapping_add(cycles);
 
         // Constants for Game Boy timing
-        const SCANLINE_CYCLES: u32 = 456;  // Cycles per scanline
-        const TOTAL_SCANLINES: u8 = 154;   // Total scanlines per frame
+        const SCANLINE_CYCLES: u32 = 456; // Cycles per scanline
+        const TOTAL_SCANLINES: u8 = 154; // Total scanlines per frame
 
         let mut frame_completed = false;
 
@@ -218,9 +221,21 @@ impl Ppu {
         if mode != old_mode {
             // Trigger STAT interrupt on mode transition if enabled
             match mode {
-                0 => if stat & 0x08 != 0 { request_stat_int = true; }, // Mode 0 HBlank
-                1 => if stat & 0x10 != 0 { request_stat_int = true; }, // Mode 1 VBlank
-                2 => if stat & 0x20 != 0 { request_stat_int = true; }, // Mode 2 OAM Search
+                0 => {
+                    if stat & 0x08 != 0 {
+                        request_stat_int = true;
+                    }
+                } // Mode 0 HBlank
+                1 => {
+                    if stat & 0x10 != 0 {
+                        request_stat_int = true;
+                    }
+                } // Mode 1 VBlank
+                2 => {
+                    if stat & 0x20 != 0 {
+                        request_stat_int = true;
+                    }
+                } // Mode 2 OAM Search
                 _ => {}
             }
         }
@@ -229,7 +244,7 @@ impl Ppu {
         let lyc = bus.lyc();
         let lyc_match = self.scanline == lyc;
         let old_lyc_match = stat & 0x04 != 0;
-        
+
         if lyc_match && !old_lyc_match {
             if stat & 0x40 != 0 {
                 request_stat_int = true;
@@ -266,7 +281,7 @@ impl Ppu {
     fn render_frame(&mut self, bus: &Bus) {
         // Read LCD control register to determine what to render
         let lcdc = bus.read8(0xFF40);
-        let bg_enabled = lcdc & 0x01 != 0;  // Bit 0: BG enable
+        let bg_enabled = lcdc & 0x01 != 0; // Bit 0: BG enable
 
         // If background is disabled, clear screen to color 0
         if !bg_enabled {
@@ -275,17 +290,17 @@ impl Ppu {
         }
 
         // Read rendering parameters from I/O registers
-        let scroll_y = bus.read8(0xFF42) as usize;  // Background scroll Y
-        let scroll_x = bus.read8(0xFF43) as usize;  // Background scroll X
-        let palette = bus.read8(0xFF47);           // Background palette
+        let scroll_y = bus.read8(0xFF42) as usize; // Background scroll Y
+        let scroll_x = bus.read8(0xFF43) as usize; // Background scroll X
+        let palette = bus.read8(0xFF47); // Background palette
 
         // Determine tile map base address (0x9800 or 0x9C00)
         let bg_map_base = if lcdc & 0x08 != 0 { 0x9C00 } else { 0x9800 };
 
         // Determine Window parameters
-        let wy = bus.read8(0xFF4A) as usize;       // Window Y
-        let wx = bus.read8(0xFF4B) as usize;       // Window X
-        let win_enabled = (lcdc & 0x20) != 0;      // Bit 5: Window enable
+        let wy = bus.read8(0xFF4A) as usize; // Window Y
+        let wx = bus.read8(0xFF4B) as usize; // Window X
+        let win_enabled = (lcdc & 0x20) != 0; // Bit 5: Window enable
         let win_map_base = if lcdc & 0x40 != 0 { 0x9C00 } else { 0x9800 }; // Bit 6: Window map base
         let win_x_start = (wx as i32) - 7;
 
@@ -296,7 +311,8 @@ impl Ppu {
         for y in 0..SCREEN_HEIGHT {
             for x in 0..SCREEN_WIDTH {
                 // Determine if we should render the window or background pixel
-                let in_window = win_enabled && wy < SCREEN_HEIGHT && y >= wy && (x as i32) >= win_x_start;
+                let in_window =
+                    win_enabled && wy < SCREEN_HEIGHT && y >= wy && (x as i32) >= win_x_start;
 
                 let (map_y, tile_line, map_x, tile_col, map_base) = if in_window {
                     let window_x = (x as i32 - win_x_start) as usize;
@@ -334,11 +350,11 @@ impl Ppu {
 
                 // Get the two bytes for this pixel row (8 pixels, 2 bits each)
                 let line_addr = tile_addr.wrapping_add(tile_line * 2);
-                let b1 = bus.read8(line_addr);         // Low bit plane
+                let b1 = bus.read8(line_addr); // Low bit plane
                 let b2 = bus.read8(line_addr.wrapping_add(1)); // High bit plane
 
                 // Extract color index for this pixel (2 bits)
-                let bit = 7 - tile_col;  // MSB first (bit 7 = leftmost pixel)
+                let bit = 7 - tile_col; // MSB first (bit 7 = leftmost pixel)
                 let color_index = ((b2 >> bit) & 1) << 1 | ((b1 >> bit) & 1);
 
                 // Apply palette to get final shade (0-3)
@@ -364,7 +380,7 @@ impl Ppu {
     /// - Color 0 is transparent
     /// - Priority determines layering with background
     fn render_sprites(&mut self, bus: &Bus, lcdc: u8) {
-        let sprites_enabled = lcdc & 0x02 != 0;  // Bit 1: Sprite enable
+        let sprites_enabled = lcdc & 0x02 != 0; // Bit 1: Sprite enable
         if !sprites_enabled {
             return;
         }
@@ -374,24 +390,24 @@ impl Ppu {
 
         // OAM base address and sprite palettes
         let oam_base = 0xFE00u16;
-        let palette0 = bus.read8(0xFF48);  // Object palette 0
-        let palette1 = bus.read8(0xFF49);  // Object palette 1
+        let palette0 = bus.read8(0xFF48); // Object palette 0
+        let palette1 = bus.read8(0xFF49); // Object palette 1
 
         // Process all 40 sprites in OAM (Game Boy doesn't sort by priority)
         for sprite_idx in 0..40 {
             let oam_offset = (sprite_idx * 4) as u16;
 
             // Read sprite attributes from OAM
-            let sprite_y = bus.read8(oam_base + oam_offset) as i16 - 16;      // Y position (top)
-            let sprite_x = bus.read8(oam_base + oam_offset + 1) as i16 - 8;  // X position (left)
-            let tile_number = bus.read8(oam_base + oam_offset + 2);          // Tile index
-            let attributes = bus.read8(oam_base + oam_offset + 3);           // Attributes
+            let sprite_y = bus.read8(oam_base + oam_offset) as i16 - 16; // Y position (top)
+            let sprite_x = bus.read8(oam_base + oam_offset + 1) as i16 - 8; // X position (left)
+            let tile_number = bus.read8(oam_base + oam_offset + 2); // Tile index
+            let attributes = bus.read8(oam_base + oam_offset + 3); // Attributes
 
             // Parse sprite attributes
-            let priority = attributes & 0x80 != 0;     // Bit 7: Priority (0=above BG, 1=behind BG)
-            let y_flip = attributes & 0x40 != 0;       // Bit 6: Vertical flip
-            let x_flip = attributes & 0x20 != 0;       // Bit 5: Horizontal flip
-            let palette_num = attributes & 0x10 != 0;  // Bit 4: Palette select (0=OBP0, 1=OBP1)
+            let priority = attributes & 0x80 != 0; // Bit 7: Priority (0=above BG, 1=behind BG)
+            let y_flip = attributes & 0x40 != 0; // Bit 6: Vertical flip
+            let x_flip = attributes & 0x20 != 0; // Bit 5: Horizontal flip
+            let palette_num = attributes & 0x10 != 0; // Bit 4: Palette select (0=OBP0, 1=OBP1)
             let palette = if palette_num { palette1 } else { palette0 };
 
             // Render each pixel row of the sprite
@@ -399,7 +415,7 @@ impl Ppu {
                 // Calculate screen Y position
                 let screen_y = sprite_y + sy as i16;
                 if screen_y < 0 || screen_y >= SCREEN_HEIGHT as i16 {
-                    continue;  // Sprite row is off-screen
+                    continue; // Sprite row is off-screen
                 }
 
                 // Handle vertical flipping
@@ -427,7 +443,7 @@ impl Ppu {
                     // Calculate screen X position
                     let screen_x = sprite_x + sx as i16;
                     if screen_x < 0 || screen_x >= SCREEN_WIDTH as i16 {
-                        continue;  // Sprite pixel is off-screen
+                        continue; // Sprite pixel is off-screen
                     }
 
                     // Handle horizontal flipping

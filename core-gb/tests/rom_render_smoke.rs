@@ -3,11 +3,16 @@ use std::path::PathBuf;
 
 use core_gb::GameBoy;
 
-const ROMS: &[&str] = &["../PokemonRed.gb", "../Pokemon - Red Version (USA, Europe) (SGB Enhanced).gb", "../dmg-acid2.gb"];
+const ROMS: &[&str] = &[
+    "../PokemonRed.gb",
+    "../Pokemon - Red Version (USA, Europe) (SGB Enhanced).gb",
+    "../dmg-acid2.gb",
+];
 
 fn load_rom(path: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path);
-    fs::read(&path).unwrap_or_else(|error| panic!("Failed to read ROM '{}': {}", path.display(), error))
+    fs::read(&path)
+        .unwrap_or_else(|error| panic!("Failed to read ROM '{}': {}", path.display(), error))
 }
 
 fn framebuffer_is_not_blank(framebuffer: &[u8]) -> bool {
@@ -31,6 +36,10 @@ fn all_roms_render_non_blank_frame() {
             }
         }
 
-        assert!(found_non_blank, "ROM '{}' produced a blank framebuffer", rom_path);
+        assert!(
+            found_non_blank,
+            "ROM '{}' produced a blank framebuffer",
+            rom_path
+        );
     }
 }

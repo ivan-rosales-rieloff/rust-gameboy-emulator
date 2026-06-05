@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 core-gb = { path = "../core-gb" }
+core-common = { path = "../core-common" }
 minifb = "0.27"
 rfd = "0.12"
 rodio = "0.17"

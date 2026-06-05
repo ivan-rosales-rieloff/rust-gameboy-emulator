@@ -85,13 +85,16 @@
 
 use crate::cartridge::Cartridge;
 use crate::trace::{trace, trace_enabled};
+use core_common::LinkEndpoint;
+use serde::{Deserialize, Serialize};
+use serde_big_array::BigArray;
 
 // Memory region sizes (in bytes)
-const VRAM_SIZE: usize = 0x4000;  // 16KB Video RAM (2 banks of 8KB for GBC)
-const WRAM_SIZE: usize = 0x8000;  // 32KB Working RAM (8 banks of 4KB for GBC)
-const OAM_SIZE: usize = 0x00A0;   // 160 bytes Object Attribute Memory
-const IO_SIZE: usize = 0x0080;    // 128 bytes I/O Registers
-const HRAM_SIZE: usize = 0x007F;  // 127 bytes High RAM
+const VRAM_SIZE: usize = 0x4000; // 16KB Video RAM (2 banks of 8KB for GBC)
+const WRAM_SIZE: usize = 0x8000; // 32KB Working RAM (8 banks of 4KB for GBC)
+const OAM_SIZE: usize = 0x00A0; // 160 bytes Object Attribute Memory
+const IO_SIZE: usize = 0x0080; // 128 bytes I/O Registers
+const HRAM_SIZE: usize = 0x007F; // 127 bytes High RAM
 
 /// The Game Boy memory bus that handles all memory access and I/O operations.
 ///
@@ -105,24 +108,40 @@ const HRAM_SIZE: usize = 0x007F;  // 127 bytes High RAM
 /// - **I/O Handling**: Manages hardware registers and device communication
 /// - **Cartridge Interface**: Routes ROM/RAM access through MBC logic
 /// - **Debugging Support**: Provides tracing for memory access patterns
-#[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize)]
 pub struct Bus {
     /// The game cartridge with ROM and optional RAM
     cartridge: Cartridge,
     /// Video RAM for tile data and background/window maps
+    #[serde(with = "BigArray")]
     vram: [u8; VRAM_SIZE],
     /// Working RAM for game variables and stack
+    #[serde(with = "BigArray")]
     wram: [u8; WRAM_SIZE],
     /// Object Attribute Memory for sprite properties
+    #[serde(with = "BigArray")]
     oam: [u8; OAM_SIZE],
     /// I/O registers for hardware control
+    #[serde(with = "BigArray")]
     io: [u8; IO_SIZE],
     /// High RAM for fast variable access
+    #[serde(with = "BigArray")]
     hram: [u8; HRAM_SIZE],
     /// Interrupt Enable register (separate for easier access)
     ie: u8,
     /// Current joypad button state (bitfield)
     button_state: u8,
+    /// Serial transfer buffer (SB register, 0xFF01)
+    serial_sb: u8,
+    /// Serial control register (SC register, 0xFF02)
+    serial_sc: u8,
+    /// Serial transfer clock accumulator for internal clock transfers
+    serial_clock: u32,
+    /// Serial transfer active state
+    serial_transfer_in_progress: bool,
+    /// Optional link transport endpoint for networked serial emulation
+    #[serde(skip, default)]
+    serial_link: Option<Box<dyn LinkEndpoint + Send>>,
     /// Audio Processing Unit
     pub apu: crate::apu::Apu,
     /// DIV timer ticks cycle accumulator
@@ -137,13 +156,40 @@ pub struct Bus {
     /// GBC WRAM bank selector (0xFF70)
     pub svbk: u8,
     /// GBC Background Palette Memory (64 bytes, 8 palettes x 4 colors x 2 bytes)
+    #[serde(with = "BigArray")]
     pub bg_palette_ram: [u8; 64],
     /// GBC Sprite Palette Memory (64 bytes, 8 palettes x 4 colors x 2 bytes)
+    #[serde(with = "BigArray")]
     pub sp_palette_ram: [u8; 64],
     /// GBC Background Palette Index Register (0xFF68)
     pub bg_palette_idx: u8,
     /// GBC Sprite Palette Index Register (0xFF6A)
     pub sp_palette_idx: u8,
+}
+
+impl std::fmt::Debug for Bus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Bus")
+            .field("cartridge", &self.cartridge)
+            .field("ie", &self.ie)
+            .field("button_state", &self.button_state)
+            .field("serial_sb", &self.serial_sb)
+            .field("serial_sc", &self.serial_sc)
+            .field("serial_clock", &self.serial_clock)
+            .field(
+                "serial_transfer_in_progress",
+                &self.serial_transfer_in_progress,
+            )
+            .field("apu", &self.apu)
+            .field("div_counter", &self.div_counter)
+            .field("timer_counter", &self.timer_counter)
+            .field("is_cgb", &self.is_cgb)
+            .field("vbk", &self.vbk)
+            .field("svbk", &self.svbk)
+            .field("bg_palette_idx", &self.bg_palette_idx)
+            .field("sp_palette_idx", &self.sp_palette_idx)
+            .finish()
+    }
 }
 
 impl Bus {
@@ -233,6 +279,11 @@ impl Bus {
             hram: [0; HRAM_SIZE],
             ie: 0,              // No interrupts enabled initially
             button_state: 0xFF, // All buttons released (active low)
+            serial_sb: 0x00,
+            serial_sc: 0x7E,
+            serial_clock: 0,
+            serial_transfer_in_progress: false,
+            serial_link: None,
             apu: crate::apu::Apu::default(),
             div_counter: 0,
             timer_counter: 0,
@@ -263,6 +314,21 @@ impl Bus {
     ///   - Bits 4-7: Direction buttons (Right, Left, Up, Down)
     pub fn set_button_state(&mut self, buttons: u8) {
         self.button_state = buttons;
+    }
+
+    /// Connects a serial link endpoint to this bus.
+    pub fn connect_link(&mut self, link: Box<dyn LinkEndpoint + Send>) {
+        self.serial_link = Some(link);
+    }
+
+    /// Disconnects the serial link endpoint.
+    pub fn disconnect_link(&mut self) {
+        self.serial_link = None;
+    }
+
+    /// Returns true if a serial link endpoint is connected.
+    pub fn has_link(&self) -> bool {
+        self.serial_link.is_some()
     }
 
     /// Reads a byte from the specified memory address.
@@ -321,9 +387,7 @@ impl Bus {
             }
 
             // Echo RAM (mirror of WRAM C000-DDFF)
-            0xE000..=0xFDFF => {
-                self.read8(address - 0x2000)
-            }
+            0xE000..=0xFDFF => self.read8(address - 0x2000),
 
             // Object Attribute Memory (sprite properties)
             0xFE00..=0xFE9F => self.oam[usize::from(address - 0xFE00)],
@@ -333,7 +397,9 @@ impl Bus {
 
             // Joypad input register (special handling required)
             0xFF00 => self.read_joypad(),
-
+            // Serial registers
+            0xFF01 => self.serial_sb,
+            0xFF02 => self.serial_sc,
             // Sound registers and Wave RAM mapped directly to APU
             0xFF10..=0xFF26 | 0xFF30..=0xFF3F => self.apu.read_register(address),
 
@@ -350,7 +416,8 @@ impl Bus {
                     _ => self.io[io_idx],
                 };
                 // Trace important interrupt and LCD registers
-                if trace_enabled() && (address == 0xFF41 || address == 0xFF0F || address == 0xFFFF) {
+                if trace_enabled() && (address == 0xFF41 || address == 0xFF0F || address == 0xFFFF)
+                {
                     trace(&format!("IO read: 0x{:04X} = 0x{:02X}", address, value));
                 }
                 value
@@ -387,7 +454,10 @@ impl Bus {
             0x8000..=0x9FFF => {
                 // Trace writes to background map area for debugging
                 if trace_enabled() && address >= 0x9800 && address <= 0x9BFF {
-                    trace(&format!("VRAM BG map write: 0x{:04X} <= 0x{:02X}", address, value));
+                    trace(&format!(
+                        "VRAM BG map write: 0x{:04X} <= 0x{:02X}",
+                        address, value
+                    ));
                 }
                 if self.is_cgb && (self.vbk & 1) != 0 {
                     self.vram[0x2000 + usize::from(address - 0x8000)] = value;
@@ -427,7 +497,7 @@ impl Bus {
             0xFE00..=0xFE9F => self.oam[usize::from(address - 0xFE00)] = value,
 
             // Unusable memory (writes ignored)
-            0xFEA0..=0xFEFF => {},
+            0xFEA0..=0xFEFF => {}
 
             // Joypad register (P1) with tracing
             0xFF00 => {
@@ -435,6 +505,20 @@ impl Bus {
                     trace(&format!("P1 write: 0xFF00 <= 0x{value:02X}"));
                 }
                 self.io[0] = value;
+            }
+
+            // Serial registers
+            0xFF01 => {
+                self.serial_sb = value;
+                self.io[0x01] = value;
+            }
+            0xFF02 => {
+                self.serial_sc = value | 0x7E; // unused bits are read as 1
+                self.io[0x02] = self.serial_sc;
+                if self.serial_sc & 0x80 != 0 && !self.serial_transfer_in_progress {
+                    self.serial_transfer_in_progress = true;
+                    self.serial_clock = 0;
+                }
             }
 
             // Sound registers and Wave RAM mapped directly to APU
@@ -652,5 +736,36 @@ impl Bus {
                 }
             }
         }
+
+        self.tick_serial(cycles);
+    }
+
+    /// Advances the serial transfer state by the given number of CPU cycles.
+    ///
+    /// When an internal clock transfer is active, the serial link completes after
+    /// 512 CPU cycles and exchanges one byte with the connected peer.
+    fn tick_serial(&mut self, cycles: u32) {
+        if !self.serial_transfer_in_progress {
+            return;
+        }
+
+        self.serial_clock = self.serial_clock.wrapping_add(cycles);
+        if self.serial_clock < 512 {
+            return;
+        }
+
+        let output_byte = self.serial_sb;
+        let incoming_byte = if let Some(peer) = self.serial_link.as_mut() {
+            peer.transfer_byte(output_byte).unwrap_or(0xFF)
+        } else {
+            0xFF
+        };
+
+        self.serial_sb = incoming_byte;
+        self.io[0x01] = incoming_byte;
+        self.serial_transfer_in_progress = false;
+        self.serial_sc &= !0x80;
+        self.io[0x02] = self.serial_sc;
+        self.request_interrupt(0x08);
     }
 }

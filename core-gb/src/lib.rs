@@ -361,6 +361,79 @@ impl From<CpuError> for GameBoyError {
 }
 
 #[cfg(test)]
+mod test_serialization {
+    use super::*;
+    use crate::apu::Apu;
+    use crate::bus::Bus;
+    use crate::ppu::Ppu;
+    use bincode;
+
+    #[test]
+    fn serialize_and_deserialize_ppu() {
+        let ppu = Ppu::default();
+        let encoded = bincode::serde::encode_to_vec(&ppu, bincode::config::standard()).expect("encode ppu");
+        let (_decoded, _) = bincode::serde::decode_from_slice::<Ppu, _>(&encoded, bincode::config::standard()).expect("decode ppu");
+        drop(_decoded);
+    }
+
+    #[test]
+    fn serialize_and_deserialize_apu() {
+        let apu = Apu::default();
+        let encoded = bincode::serde::encode_to_vec(&apu, bincode::config::standard()).expect("encode apu");
+        let (_decoded, _) = bincode::serde::decode_from_slice::<Apu, _>(&encoded, bincode::config::standard()).expect("decode apu");
+        drop(_decoded);
+    }
+
+    #[test]
+    fn serialize_and_deserialize_cpu() {
+        let cpu = crate::cpu::Cpu::default();
+        let encoded = bincode::serde::encode_to_vec(&cpu, bincode::config::standard()).expect("encode cpu");
+        let (_decoded, _) = bincode::serde::decode_from_slice::<crate::cpu::Cpu, _>(&encoded, bincode::config::standard()).expect("decode cpu");
+        drop(_decoded);
+    }
+
+    #[test]
+    fn serialize_and_deserialize_bus() {
+        let rom = vec![0u8; 0x8000];
+        let cartridge = crate::cartridge::Cartridge::from_rom(rom).expect("create cartridge");
+        let bus = Bus::new(cartridge);
+        let encoded = bincode::serde::encode_to_vec(&bus, bincode::config::standard()).expect("encode bus");
+        let (_decoded, _) = bincode::serde::decode_from_slice::<Bus, _>(&encoded, bincode::config::standard()).expect("decode bus");
+        drop(_decoded);
+    }
+
+    #[test]
+    fn serialize_and_deserialize_gameboy() {
+        let mut rom = vec![0u8; 0x8000];
+        rom[0x0147] = 0x00;
+        rom[0x0100] = 0x00;
+        let mut gb = GameBoy::from_rom_bytes(rom).expect("create gameboy");
+        gb.run_steps(1000).expect("run steps");
+
+        let encoded = bincode::serde::encode_to_vec(&gb, bincode::config::standard())
+            .expect("encode gameboy");
+        let (_decoded, _) = bincode::serde::decode_from_slice::<GameBoy, _>(&encoded, bincode::config::standard())
+            .expect("decode gameboy");
+        drop(_decoded);
+    }
+
+    #[test]
+    fn serialize_and_deserialize_gameboy_borrow() {
+        let mut rom = vec![0u8; 0x8000];
+        rom[0x0147] = 0x00;
+        rom[0x0100] = 0x00;
+        let mut gb = GameBoy::from_rom_bytes(rom).expect("create gameboy");
+        gb.run_steps(1000).expect("run steps");
+
+        let encoded = bincode::serde::encode_to_vec(&gb, bincode::config::standard())
+            .expect("encode gameboy");
+        let (_decoded, _) = bincode::serde::borrow_decode_from_slice::<GameBoy, _>(&encoded, bincode::config::standard())
+            .expect("borrow decode gameboy");
+        drop(_decoded);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

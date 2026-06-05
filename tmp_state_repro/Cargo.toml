@@ -1,0 +1,9 @@
+[package]
+name = "tmp_state_repro"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+core-gb = { path = "../core-gb" }
+bincode = { version = "2.0", features = ["serde"] }
+

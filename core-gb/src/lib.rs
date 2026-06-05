@@ -265,6 +265,23 @@ impl GameBoy {
         Ok(())
     }
 
+    /// Saves the cartridge RAM to a custom path chosen by the frontend.
+    pub fn save_game_to<P: AsRef<Path>>(&self, path: P) -> Result<(), GameBoyError> {
+        self.bus
+            .cartridge()
+            .save_game_to(path.as_ref())
+            .map_err(|e| GameBoyError::StateSerialization(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Loads cartridge RAM from a specified save file path into the running GameBoy.
+    pub fn load_game_from<P: AsRef<Path>>(&mut self, path: P) -> Result<(), GameBoyError> {
+        self.bus
+            .cartridge_mut()
+            .load_game_from(path.as_ref())?;
+        Ok(())
+    }
+
     /// Returns true if the cartridge has battery-backed save RAM.
     ///
     /// Battery cartridges can save game progress between sessions.
@@ -616,7 +633,7 @@ mod tests {
 
     #[test]
     fn debug_pokemon_red_lcdc_initialization() {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("/tools/bgbw64/Pokemon Red.gb");
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../bgbtest.gb");
         let rom = std::fs::read(&path).unwrap();
         let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
 
@@ -641,7 +658,7 @@ mod tests {
 
     #[test]
     fn trace_pokemon_red_initial_instructions() {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("/tools/bgbw64/Pokemon Red.gb");
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../bgbtest.gb");
         let rom = std::fs::read(&path).unwrap();
         let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
 

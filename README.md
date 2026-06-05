@@ -96,7 +96,6 @@ The emulator supports the following Game Boy controls with the desktop frontend 
 
 - The project is still under active development and may not support every Game Boy instruction or cartridge type yet.
 - Battery-backed save RAM is persisted automatically to `saves/{title}.catrigestate` when supported, with debounced writes to reduce disk I/O.
-- Temporary reproduction/test projects such as `tmp_repro` and `tmp_state_repro` have been removed from the repository.
 - The `core-gb` crate includes smoke tests that verify rendering non-blank frames for known ROMs.
 
 ## Disclaimer

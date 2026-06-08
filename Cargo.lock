@@ -1262,15 +1262,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde-big-array"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd31f59f6fe2b0c055371bb2f16d7f0aa7d8881676c04a55b1596d1a17cd10a4"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1456,23 +1447,6 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
-
-[[package]]
-name = "tmp_repro"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "serde",
- "serde-big-array",
-]
-
-[[package]]
-name = "tmp_state_repro"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "core-gb",
-]
 
 [[package]]
 name = "toml"

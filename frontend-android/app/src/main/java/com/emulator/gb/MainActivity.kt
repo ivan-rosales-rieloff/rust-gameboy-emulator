@@ -66,7 +66,6 @@ const val BTN_DOWN: Byte = -0x80
 @Composable
 fun EmulatorScreen() {
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
 
     var isRomLoaded by remember { mutableStateOf(false) }
     var isRunning by remember { mutableStateOf(false) }
@@ -79,9 +78,6 @@ fun EmulatorScreen() {
 
     var buttonState by remember { mutableStateOf<Byte>(0) }
 
-    // Audio output configuration
-    var audioTrack: AudioTrack? = remember { null }
-
     // ROM file picker
     val romPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -90,7 +86,7 @@ fun EmulatorScreen() {
             try {
                 context.contentResolver.openInputStream(uri)?.use { stream ->
                     val bytes = stream.readBytes()
-                    if (EmulatorBridge.init(bytes)) {
+                    if (EmulatorBridge.init(bytes, context.filesDir.absolutePath)) {
                         isRomLoaded = true
                         isRunning = true
                         romTitle = getFileName(context, uri) ?: "Game Boy Game"
@@ -126,7 +122,7 @@ fun EmulatorScreen() {
                 AudioFormat.CHANNEL_OUT_STEREO,
                 AudioFormat.ENCODING_PCM_FLOAT
             )
-            audioTrack = AudioTrack.Builder()
+            val audioTrack = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_GAME)
@@ -144,27 +140,37 @@ fun EmulatorScreen() {
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
-            audioTrack?.play()
+            try {
+                audioTrack.play()
 
-            launch(Dispatchers.Default) {
-                while (isActive && isRunning) {
-                    val frameSuccess = EmulatorBridge.runFrame(pixelBuffer)
-                    if (frameSuccess) {
-                        bitmap.setPixels(pixelBuffer, 0, 160, 0, 0, 160, 144)
-                        bitmapState = bitmap.asImageBitmap()
+                launch(Dispatchers.Default) {
+                    try {
+                        while (isActive && isRunning) {
+                            val frameSuccess = EmulatorBridge.runFrame(pixelBuffer)
+                            if (frameSuccess) {
+                                bitmap.setPixels(pixelBuffer, 0, 160, 0, 0, 160, 144)
+                                bitmapState = bitmap.asImageBitmap()
 
-                        // Process Audio Samples
-                        val samples = EmulatorBridge.getAudioSamples()
-                        if (samples != null && samples.isNotEmpty()) {
-                            audioTrack?.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+                                // Process Audio Samples
+                                val samples = EmulatorBridge.getAudioSamples()
+                                if (samples != null && samples.isNotEmpty()) {
+                                    audioTrack.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+                                }
+                            } else {
+                                delay(16) // Fallback limit
+                            }
                         }
-                    } else {
-                        delay(16) // Fallback limit
+                    } finally {
+                        try {
+                            audioTrack.stop()
+                        } catch (e: Exception) {
+                            // Ignore
+                        }
+                        audioTrack.release()
                     }
-                }
-                audioTrack?.stop()
-                audioTrack?.release()
-                audioTrack = null
+                }.join()
+            } catch (e: Exception) {
+                Log.e("Emulator", "Error in emulation loop: ${e.message}", e)
             }
         }
     }

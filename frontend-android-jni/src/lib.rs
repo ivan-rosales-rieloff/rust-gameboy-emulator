@@ -15,10 +15,20 @@ const PALETTE: [i32; 4] = [
 
 #[no_mangle]
 pub extern "system" fn Java_com_emulator_gb_EmulatorBridge_init<'local>(
-    env: JNIEnv<'local>,
+    mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     rom_bytes: JByteArray<'local>,
+    save_dir: JString<'local>,
 ) -> jboolean {
+    let save_dir_str: String = match env.get_string(&save_dir) {
+        Ok(s) => s.into(),
+        Err(_) => return JNI_FALSE,
+    };
+
+    if std::env::set_current_dir(&save_dir_str).is_err() {
+        return JNI_FALSE;
+    }
+
     let rom = match env.convert_byte_array(&rom_bytes) {
         Ok(bytes) => bytes,
         Err(_) => return JNI_FALSE,

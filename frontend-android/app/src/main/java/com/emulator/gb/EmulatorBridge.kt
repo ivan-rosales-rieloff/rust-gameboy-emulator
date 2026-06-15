@@ -5,7 +5,7 @@ object EmulatorBridge {
         System.loadLibrary("frontend_android_jni")
     }
 
-    external fun init(romBytes: ByteArray): Boolean
+    external fun init(romBytes: ByteArray, saveDir: String): Boolean
     external fun runFrame(pixelsOut: IntArray): Boolean
     external fun setInputs(buttons: Byte)
     external fun getAudioSamples(): FloatArray?

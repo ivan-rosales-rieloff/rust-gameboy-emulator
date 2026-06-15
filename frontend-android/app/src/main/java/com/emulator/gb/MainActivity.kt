@@ -60,7 +60,7 @@ const val BTN_START: Byte = 0x08
 const val BTN_RIGHT: Byte = 0x10
 const val BTN_LEFT: Byte = 0x20
 const val BTN_UP: Byte = 0x40
-const val BTN_DOWN: Byte = 0x80
+const val BTN_DOWN: Byte = -0x80
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

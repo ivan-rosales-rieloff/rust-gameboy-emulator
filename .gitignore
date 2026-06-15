@@ -11,3 +11,5 @@ target/
 *.gba
 *.zip
 *.catridgestate
+android-sdk/
+saves/

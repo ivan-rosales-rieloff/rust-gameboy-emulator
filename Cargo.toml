@@ -3,6 +3,7 @@ members = [
     "core-common",
     "core-gb",
     "core-gba",
-    "frontend-desktop"
+    "frontend-desktop",
+    "frontend-android-jni"
 ]
 resolver = "2"

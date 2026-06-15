@@ -1,0 +1,179 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+      - feature/android-support
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-desktop:
+    name: Build Desktop - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_name: gb-emulator-linux
+            binary_name: gb-emulator-linux
+            binary_path: target/release/frontend-desktop
+          - os: windows-latest
+            artifact_name: gb-emulator-windows
+            binary_name: gb-emulator-windows.exe
+            binary_path: target/release/frontend-desktop.exe
+          - os: macos-latest
+            artifact_name: gb-emulator-macos
+            binary_name: gb-emulator-macos
+            binary_path: target/release/frontend-desktop
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust Cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Install Linux Dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxft-dev libxext-dev libgtk-3-dev
+
+      - name: Build Binary
+        run: cargo build --release --bin frontend-desktop
+
+      - name: Rename and Prepare Binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp ${{ matrix.binary_path }} dist/${{ matrix.binary_name }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.binary_name }}
+
+  build-android:
+    name: Build Android App
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+
+      - name: Setup Rust Cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r25c
+          add-to-path: false
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Build Rust JNI Libraries
+        run: |
+          cargo ndk -t aarch64-linux-android -t x86_64-linux-android -o ./frontend-android/app/src/main/jniLibs build -p frontend-android-jni --release
+
+      - name: Grant Execute Permission to gradlew
+        run: chmod +x frontend-android/gradlew
+
+      - name: Build Android APK
+        run: |
+          cd frontend-android
+          ./gradlew assembleDebug
+
+      - name: Prepare APK Artifact
+        run: |
+          mkdir -p dist
+          cp frontend-android/app/build/outputs/apk/debug/app-debug.apk dist/gb-emulator-android.apk
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gb-emulator-android
+          path: dist/gb-emulator-android.apk
+
+  create-release:
+    name: Create Github Release
+    needs: [build-desktop, build-android]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate Tag Name
+        id: tag_gen
+        run: |
+          TODAY=$(date +'%Y.%m.%d')
+          EXISTING_TAGS=$(git tag -l "${TODAY}.*")
+          COUNT=1
+          if [ ! -z "$EXISTING_TAGS" ]; then
+            MAX_SUFFIX=$(echo "$EXISTING_TAGS" | sed "s/^${TODAY}\.//" | sort -n | tail -n 1)
+            COUNT=$((MAX_SUFFIX + 1))
+          fi
+          TAG_NAME="${TODAY}.${COUNT}"
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "Generated Tag Name: $TAG_NAME"
+
+      - name: Create Git Tag
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.tag_gen.outputs.TAG_NAME }}" -m "Release ${{ steps.tag_gen.outputs.TAG_NAME }}"
+          git push origin "${{ steps.tag_gen.outputs.TAG_NAME }}"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gb-emulator-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag_gen.outputs.TAG_NAME }}
+          name: Release ${{ steps.tag_gen.outputs.TAG_NAME }}
+          body: |
+            Automated release of the Game Boy Emulator.
+            
+            ### Platform Artifacts:
+            * **Android**: `gb-emulator-android.apk` (touch controls and audio)
+            * **Windows**: `gb-emulator-windows.exe`
+            * **Linux**: `gb-emulator-linux`
+            * **macOS**: `gb-emulator-macos`
+          files: |
+            dist/gb-emulator-linux
+            dist/gb-emulator-windows.exe
+            dist/gb-emulator-macos
+            dist/gb-emulator-android.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

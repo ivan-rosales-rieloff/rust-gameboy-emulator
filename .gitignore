@@ -13,3 +13,19 @@ target/
 *.catridgestate
 android-sdk/
 saves/
+
+# Gradle and Android build outputs
+.gradle/
+**/build/
+**/local.properties
+.idea/
+*.iml
+**/.cxx/
+**/.externalNativeBuild/
+
+# Binary files and artifacts
+**/*.apk
+**/*.ap_
+**/*.dex
+**/*.class
+**/*.so

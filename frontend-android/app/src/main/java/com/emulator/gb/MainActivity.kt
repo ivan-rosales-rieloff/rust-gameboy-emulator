@@ -13,6 +13,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -31,6 +32,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -38,6 +41,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -74,7 +78,7 @@ fun EmulatorScreen() {
 
     val pixelBuffer = remember { IntArray(160 * 144) }
     val bitmap = remember { Bitmap.createBitmap(160, 144, Bitmap.Config.ARGB_8888) }
-    var bitmapState by remember { mutableStateOf(bitmap.asImageBitmap()) }
+    var frameTick by remember { mutableStateOf(0) }
 
     var buttonState by remember { mutableStateOf<Byte>(0) }
 
@@ -122,6 +126,7 @@ fun EmulatorScreen() {
                 AudioFormat.CHANNEL_OUT_STEREO,
                 AudioFormat.ENCODING_PCM_FLOAT
             )
+            // Increase buffer size to at least 16384 bytes to prevent stutter
             val audioTrack = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
@@ -136,41 +141,49 @@ fun EmulatorScreen() {
                         .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                         .build()
                 )
-                .setBufferSizeInBytes(minBufferSize.coerceAtLeast(8192))
+                .setBufferSizeInBytes(minBufferSize.coerceAtLeast(16384))
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
-            try {
-                audioTrack.play()
+            var threadRunning = true
 
-                launch(Dispatchers.Default) {
-                    try {
-                        while (isActive && isRunning) {
-                            val frameSuccess = EmulatorBridge.runFrame(pixelBuffer)
-                            if (frameSuccess) {
-                                bitmap.setPixels(pixelBuffer, 0, 160, 0, 0, 160, 144)
-                                bitmapState = bitmap.asImageBitmap()
+            // Run in a dedicated high-priority thread to prevent audio starvation and OS preemption
+            val emulatorThread = Thread {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+                try {
+                    audioTrack.play()
+                    while (threadRunning) {
+                        val frameSuccess = EmulatorBridge.runFrame(pixelBuffer)
+                        if (frameSuccess) {
+                            bitmap.setPixels(pixelBuffer, 0, 160, 0, 0, 160, 144)
+                            frameTick++
 
-                                // Process Audio Samples
-                                val samples = EmulatorBridge.getAudioSamples()
-                                if (samples != null && samples.isNotEmpty()) {
-                                    audioTrack.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
-                                }
-                            } else {
-                                delay(16) // Fallback limit
+                            // Process Audio Samples
+                            val samples = EmulatorBridge.getAudioSamples()
+                            if (samples != null && samples.isNotEmpty()) {
+                                audioTrack.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
                             }
+                        } else {
+                            Thread.sleep(10)
                         }
-                    } finally {
-                        try {
-                            audioTrack.stop()
-                        } catch (e: Exception) {
-                            // Ignore
-                        }
-                        audioTrack.release()
                     }
-                }.join()
-            } catch (e: Exception) {
-                Log.e("Emulator", "Error in emulation loop: ${e.message}", e)
+                } catch (e: Exception) {
+                    Log.e("Emulator", "Error in emulation thread: ${e.message}", e)
+                } finally {
+                    try {
+                        audioTrack.stop()
+                    } catch (e: Exception) {}
+                    audioTrack.release()
+                }
+            }
+            emulatorThread.name = "EmulatorCoreThread"
+            emulatorThread.start()
+
+            try {
+                awaitCancellation()
+            } finally {
+                threadRunning = false
+                emulatorThread.join(1000)
             }
         }
     }
@@ -237,12 +250,20 @@ fun EmulatorScreen() {
                 contentAlignment = Alignment.Center
             ) {
                 if (isRomLoaded) {
-                    Image(
-                        bitmap = bitmapState,
-                        contentDescription = "Emulator screen output",
-                        modifier = Modifier.fillMaxSize(),
-                        filterQuality = FilterQuality.None
-                    )
+                    Canvas(
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        @Suppress("UNUSED_EXPRESSION")
+                        frameTick // read state in DrawScope to invalidate only the draw phase
+                        drawIntoCanvas { canvas ->
+                            val dstRect = android.graphics.Rect(0, 0, size.width.toInt(), size.height.toInt())
+                            val paint = android.graphics.Paint().apply {
+                                isAntiAlias = false
+                                isFilterBitmap = false // Keep pixel art crisp
+                            }
+                            canvas.nativeCanvas.drawBitmap(bitmap, null, dstRect, paint)
+                        }
+                    }
                 } else {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator(color = Color(0xFF00ADB5))

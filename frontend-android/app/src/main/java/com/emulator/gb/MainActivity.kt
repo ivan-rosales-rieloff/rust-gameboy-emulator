@@ -8,6 +8,8 @@ import android.media.AudioManager
 import android.media.AudioTrack
 import android.net.Uri
 import android.os.Bundle
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -70,6 +72,8 @@ const val BTN_DOWN: Byte = -0x80
 @Composable
 fun EmulatorScreen() {
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     var isRomLoaded by remember { mutableStateOf(false) }
     var isRunning by remember { mutableStateOf(false) }
@@ -189,161 +193,31 @@ fun EmulatorScreen() {
     }
 
     // Outer layout
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(Color(0xFF1E2022), Color(0xFF121214))
-                )
-            ),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        // App header / Title bar
+    if (isLandscape) {
+        // Landscape Layout
         Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(Color(0xFF1E2022), Color(0xFF121214))
+                    )
+                )
+                .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text(
-                    text = romTitle,
-                    color = Color.White,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                if (statusMessage.isNotEmpty()) {
-                    Text(
-                        text = statusMessage,
-                        color = Color.Gray,
-                        fontSize = 12.sp
-                    )
-                }
-            }
-
-            Button(
-                onClick = { romPickerLauncher.launch(arrayOf("*/*")) },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00ADB5))
-            ) {
-                Text(text = "Load ROM", color = Color.White)
-            }
-        }
-
-        // Emulator Screen Console Area
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 8.dp),
-            contentAlignment = Alignment.Center
-        ) {
+            // Left Controls Area (D-Pad)
             Box(
                 modifier = Modifier
-                    .aspectRatio(160f / 144f)
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .shadow(elevation = 16.dp, shape = RoundedCornerShape(12.dp))
-                    .background(Color.Black)
-                    .pointerInput(Unit) {},
+                    .weight(1.2f)
+                    .fillMaxHeight(),
                 contentAlignment = Alignment.Center
             ) {
-                if (isRomLoaded) {
-                    Canvas(
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        @Suppress("UNUSED_EXPRESSION")
-                        frameTick // read state in DrawScope to invalidate only the draw phase
-                        drawIntoCanvas { canvas ->
-                            val dstRect = android.graphics.Rect(0, 0, size.width.toInt(), size.height.toInt())
-                            val paint = android.graphics.Paint().apply {
-                                isAntiAlias = false
-                                isFilterBitmap = false // Keep pixel art crisp
-                            }
-                            canvas.nativeCanvas.drawBitmap(bitmap, null, dstRect, paint)
-                        }
-                    }
-                } else {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = Color(0xFF00ADB5))
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = "Please load a Game Boy ROM to begin",
-                            color = Color.LightGray,
-                            fontSize = 14.sp,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
-            }
-        }
-
-        // Emulator State Save / Load Action Row
-        if (isRomLoaded) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 32.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                Button(
-                    onClick = {
-                        val stateFile = File(context.filesDir, "quick_save.state").absolutePath
-                        if (EmulatorBridge.saveState(stateFile)) {
-                            statusMessage = "Quick state saved!"
-                        } else {
-                            statusMessage = "Save state failed"
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF393E46)),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("Save State", color = Color.White)
-                }
-
-                Button(
-                    onClick = {
-                        val stateFile = File(context.filesDir, "quick_save.state").absolutePath
-                        if (File(stateFile).exists()) {
-                            if (EmulatorBridge.loadState(stateFile)) {
-                                statusMessage = "Quick state loaded!"
-                            } else {
-                                statusMessage = "Load state failed"
-                            }
-                        } else {
-                            statusMessage = "No save state found"
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF393E46)),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("Load State", color = Color.White)
-                }
-            }
-        }
-
-        // Controls Console Area
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0xFF222831))
-                .padding(vertical = 24.dp)
-        ) {
-            // Upper Control panel: D-Pad (Left) and A/B Buttons (Right)
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 32.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // D-Pad
                 Box(
                     modifier = Modifier
-                        .size(140.dp)
+                        .size(130.dp)
                         .background(Color(0xFF393E46), shape = CircleShape)
-                        .padding(8.dp),
+                        .padding(6.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     // Up Button
@@ -351,7 +225,7 @@ fun EmulatorScreen() {
                         label = "▲",
                         modifier = Modifier
                             .align(Alignment.TopCenter)
-                            .size(40.dp),
+                            .size(36.dp),
                         onPress = { isPressed -> updateInput(BTN_UP, isPressed) }
                     )
                     // Down Button
@@ -359,7 +233,7 @@ fun EmulatorScreen() {
                         label = "▼",
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
-                            .size(40.dp),
+                            .size(36.dp),
                         onPress = { isPressed -> updateInput(BTN_DOWN, isPressed) }
                     )
                     // Left Button
@@ -367,7 +241,7 @@ fun EmulatorScreen() {
                         label = "◀",
                         modifier = Modifier
                             .align(Alignment.CenterStart)
-                            .size(40.dp),
+                            .size(36.dp),
                         onPress = { isPressed -> updateInput(BTN_LEFT, isPressed) }
                     )
                     // Right Button
@@ -375,20 +249,170 @@ fun EmulatorScreen() {
                         label = "▶",
                         modifier = Modifier
                             .align(Alignment.CenterEnd)
-                            .size(40.dp),
+                            .size(36.dp),
                         onPress = { isPressed -> updateInput(BTN_RIGHT, isPressed) }
                     )
                 }
+            }
 
-                // Action Buttons: A and B
+            // Center Screen Area
+            Column(
+                modifier = Modifier
+                    .weight(2f)
+                    .fillMaxHeight(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                // Info Header (ROM title & Status)
                 Row(
-                    modifier = Modifier.padding(top = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (romTitle.length > 20) romTitle.substring(0, 18) + "..." else romTitle,
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (statusMessage.isNotEmpty()) {
+                        Text(
+                            text = statusMessage,
+                            color = Color.Gray,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+
+                // Game Screen Box
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .aspectRatio(160f / 144f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .shadow(elevation = 8.dp, shape = RoundedCornerShape(8.dp))
+                        .background(Color.Black),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isRomLoaded) {
+                        Canvas(
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            @Suppress("UNUSED_EXPRESSION")
+                            frameTick // read state in DrawScope to invalidate only the draw phase
+                            drawIntoCanvas { canvas ->
+                                val dstRect = android.graphics.Rect(0, 0, size.width.toInt(), size.height.toInt())
+                                val paint = android.graphics.Paint().apply {
+                                    isAntiAlias = false
+                                    isFilterBitmap = false
+                                }
+                                canvas.nativeCanvas.drawBitmap(bitmap, null, dstRect, paint)
+                            }
+                        }
+                    } else {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = Color(0xFF00ADB5))
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = { romPickerLauncher.launch(arrayOf("*/*")) },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00ADB5)),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) {
+                                Text("LOAD ROM", fontSize = 11.sp, color = Color.White)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Bottom control panel (Select, Start, Quick Save/Load)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    MenuButton(
+                        label = "SELECT",
+                        onPress = { isPressed -> updateInput(BTN_SELECT, isPressed) }
+                    )
+
+                    if (isRomLoaded) {
+                        Button(
+                            onClick = {
+                                val stateFile = File(context.filesDir, "quick_save.state").absolutePath
+                                if (EmulatorBridge.saveState(stateFile)) {
+                                    statusMessage = "Saved!"
+                                } else {
+                                    statusMessage = "Save failed"
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF393E46)),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                            modifier = Modifier.height(26.dp),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text("SAVE", fontSize = 10.sp, color = Color.White)
+                        }
+
+                        Button(
+                            onClick = {
+                                val stateFile = File(context.filesDir, "quick_save.state").absolutePath
+                                if (File(stateFile).exists()) {
+                                    if (EmulatorBridge.loadState(stateFile)) {
+                                        statusMessage = "Loaded!"
+                                    } else {
+                                        statusMessage = "Load failed"
+                                    }
+                                } else {
+                                    statusMessage = "No save"
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF393E46)),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                            modifier = Modifier.height(26.dp),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text("LOAD", fontSize = 10.sp, color = Color.White)
+                        }
+                    } else {
+                        Button(
+                            onClick = { romPickerLauncher.launch(arrayOf("*/*")) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00ADB5)),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                            modifier = Modifier.height(26.dp),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text("LOAD ROM", fontSize = 10.sp, color = Color.White)
+                        }
+                    }
+
+                    MenuButton(
+                        label = "START",
+                        onPress = { isPressed -> updateInput(BTN_START, isPressed) }
+                    )
+                }
+            }
+
+            // Right Controls Area (A/B Buttons)
+            Box(
+                modifier = Modifier
+                    .weight(1.2f)
+                    .fillMaxHeight(),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     // B Button
                     ActionButton(
                         label = "B",
-                        modifier = Modifier.size(60.dp),
+                        modifier = Modifier.size(52.dp),
                         color = Color(0xFFEEEEEE),
                         onPress = { isPressed -> updateInput(BTN_B, isPressed) }
                     )
@@ -396,33 +420,250 @@ fun EmulatorScreen() {
                     // A Button
                     ActionButton(
                         label = "A",
-                        modifier = Modifier.size(60.dp),
+                        modifier = Modifier.size(52.dp),
                         color = Color(0xFF00ADB5),
                         onPress = { isPressed -> updateInput(BTN_A, isPressed) }
                     )
                 }
             }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Select & Start Row
+        }
+    } else {
+        // Portrait Layout (Original Layout)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(Color(0xFF1E2022), Color(0xFF121214))
+                    )
+                ),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // App header / Title bar
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 48.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                // Select
-                MenuButton(
-                    label = "SELECT",
-                    onPress = { isPressed -> updateInput(BTN_SELECT, isPressed) }
-                )
+                Column {
+                    Text(
+                        text = romTitle,
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (statusMessage.isNotEmpty()) {
+                        Text(
+                            text = statusMessage,
+                            color = Color.Gray,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
 
-                // Start
-                MenuButton(
-                    label = "START",
-                    onPress = { isPressed -> updateInput(BTN_START, isPressed) }
-                )
+                Button(
+                    onClick = { romPickerLauncher.launch(arrayOf("*/*")) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00ADB5))
+                ) {
+                    Text(text = "Load ROM", color = Color.White)
+                }
+            }
+
+            // Emulator Screen Console Area
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .aspectRatio(160f / 144f)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .shadow(elevation = 16.dp, shape = RoundedCornerShape(12.dp))
+                        .background(Color.Black)
+                        .pointerInput(Unit) {},
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isRomLoaded) {
+                        Canvas(
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            @Suppress("UNUSED_EXPRESSION")
+                            frameTick // read state in DrawScope to invalidate only the draw phase
+                            drawIntoCanvas { canvas ->
+                                val dstRect = android.graphics.Rect(0, 0, size.width.toInt(), size.height.toInt())
+                                val paint = android.graphics.Paint().apply {
+                                    isAntiAlias = false
+                                    isFilterBitmap = false // Keep pixel art crisp
+                                }
+                                canvas.nativeCanvas.drawBitmap(bitmap, null, dstRect, paint)
+                            }
+                        }
+                    } else {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = Color(0xFF00ADB5))
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "Please load a Game Boy ROM to begin",
+                                color = Color.LightGray,
+                                fontSize = 14.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Emulator State Save / Load Action Row
+            if (isRomLoaded) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 32.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    Button(
+                        onClick = {
+                            val stateFile = File(context.filesDir, "quick_save.state").absolutePath
+                            if (EmulatorBridge.saveState(stateFile)) {
+                                statusMessage = "Quick state saved!"
+                            } else {
+                                statusMessage = "Save state failed"
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF393E46)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Save State", color = Color.White)
+                    }
+
+                    Button(
+                        onClick = {
+                            val stateFile = File(context.filesDir, "quick_save.state").absolutePath
+                            if (File(stateFile).exists()) {
+                                if (EmulatorBridge.loadState(stateFile)) {
+                                    statusMessage = "Quick state loaded!"
+                                } else {
+                                    statusMessage = "Load state failed"
+                                }
+                            } else {
+                                statusMessage = "No save state found"
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF393E46)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Load State", color = Color.White)
+                    }
+                }
+            }
+
+            // Controls Console Area
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF222831))
+                    .padding(vertical = 24.dp)
+            ) {
+                // Upper Control panel: D-Pad (Left) and A/B Buttons (Right)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 32.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // D-Pad
+                    Box(
+                        modifier = Modifier
+                            .size(140.dp)
+                            .background(Color(0xFF393E46), shape = CircleShape)
+                            .padding(8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        // Up Button
+                        DPadButton(
+                            label = "▲",
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .size(40.dp),
+                            onPress = { isPressed -> updateInput(BTN_UP, isPressed) }
+                        )
+                        // Down Button
+                        DPadButton(
+                            label = "▼",
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .size(40.dp),
+                            onPress = { isPressed -> updateInput(BTN_DOWN, isPressed) }
+                        )
+                        // Left Button
+                        DPadButton(
+                            label = "◀",
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .size(40.dp),
+                            onPress = { isPressed -> updateInput(BTN_LEFT, isPressed) }
+                        )
+                        // Right Button
+                        DPadButton(
+                            label = "▶",
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .size(40.dp),
+                            onPress = { isPressed -> updateInput(BTN_RIGHT, isPressed) }
+                        )
+                    }
+
+                    // Action Buttons: A and B
+                    Row(
+                        modifier = Modifier.padding(top = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        // B Button
+                        ActionButton(
+                            label = "B",
+                            modifier = Modifier.size(60.dp),
+                            color = Color(0xFFEEEEEE),
+                            onPress = { isPressed -> updateInput(BTN_B, isPressed) }
+                        )
+
+                        // A Button
+                        ActionButton(
+                            label = "A",
+                            modifier = Modifier.size(60.dp),
+                            color = Color(0xFF00ADB5),
+                            onPress = { isPressed -> updateInput(BTN_A, isPressed) }
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Select & Start Row
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 48.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    // Select
+                    MenuButton(
+                        label = "SELECT",
+                        onPress = { isPressed -> updateInput(BTN_SELECT, isPressed) }
+                    )
+
+                    // Start
+                    MenuButton(
+                        label = "START",
+                        onPress = { isPressed -> updateInput(BTN_START, isPressed) }
+                    )
+                }
             }
         }
     }

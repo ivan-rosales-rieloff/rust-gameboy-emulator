@@ -29,3 +29,5 @@ saves/
 **/*.dex
 **/*.class
 **/*.so
+# local values
+local.properties

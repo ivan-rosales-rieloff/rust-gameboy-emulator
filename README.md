@@ -134,3 +134,12 @@ This application was developed with the assistance of an AI code assistant.
 - `frontend-desktop/` - desktop GUI and runtime launcher.
 - `frontend-android-jni/` - JNI bindings bridge crate.
 - `frontend-android/` - Android Kotlin application.
+
+## License
+
+This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0)**.
+
+- **Non-Commercial Use**: You may not use this material or source code for commercial purposes.
+- **Attribution**: You must give appropriate credit (mentioning the original author: **Ivan Rosales**), provide a link to the license, and indicate if changes were made.
+
+For more details, see the [LICENSE](file:///c:/Users/kanib/source/repos/gb-gba-emulator/LICENSE) file.

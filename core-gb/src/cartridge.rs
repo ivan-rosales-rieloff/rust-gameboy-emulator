@@ -74,7 +74,7 @@ use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::{Arc, atomic::Ordering};
 use std::time::Duration;
 
 /// Minimum valid ROM size (32KB - two 16KB banks)
@@ -149,9 +149,12 @@ pub struct Cartridge {
     /// Debounce interval for auto-saving battery-backed RAM (skipped for serde)
     #[serde(skip)]
     save_debounce_ms: Duration,
-    /// Counter to coordinate debounced save tasks (skipped for serde)
+    /// Whether the cartridge RAM has unstaged changes (skipped for serde)
     #[serde(skip)]
-    save_counter: Arc<AtomicU64>,
+    ram_dirty: Arc<std::sync::atomic::AtomicBool>,
+    /// Last RAM write timestamp to coordinate debounced updates (skipped for serde)
+    #[serde(skip)]
+    last_write_time: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 impl Cartridge {
@@ -242,7 +245,8 @@ impl Cartridge {
             has_battery,
             is_cgb,
             save_debounce_ms: Duration::from_millis(500),
-            save_counter: Arc::new(AtomicU64::new(0)),
+            ram_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            last_write_time: Arc::new(std::sync::Mutex::new(None)),
         };
 
         // Load save file if battery-backed RAM is supported
@@ -474,24 +478,46 @@ impl Cartridge {
                 // Write to RAM if address is valid
                     if let Some(slot) = self.ram.get_mut(offset) {
                         *slot = value;
-                        // Debounced persist: snapshot RAM and schedule a save task
                         if self.has_battery {
-                            // Increment counter to indicate a new write batch
-                            let current = self.save_counter.fetch_add(1, Ordering::SeqCst) + 1;
-                            let counter = self.save_counter.clone();
-                            let debounce = self.save_debounce_ms;
-                            let title = self.title.clone();
-                            let snapshot = self.ram.clone();
-
-                            std::thread::spawn(move || {
-                                std::thread::sleep(debounce);
-                                // Only write if no newer writes occurred
-                                if counter.load(Ordering::SeqCst) == current {
-                                    let _ = Cartridge::persist_snapshot(&title, &snapshot);
-                                }
-                            });
+                            self.ram_dirty.store(true, Ordering::SeqCst);
+                            let mut lock = self.last_write_time.lock().unwrap();
+                            *lock = Some(std::time::Instant::now());
                         }
                     }
+            }
+        }
+    }
+
+    /// Checks if a debounced RAM save needs to be written to disk.
+    ///
+    /// This is called automatically at the end of each frame if the emulator is running.
+    pub fn update_save_debouncer(&mut self) {
+        if !self.has_battery || self.ram.is_empty() {
+            return;
+        }
+
+        if self.ram_dirty.load(Ordering::SeqCst) {
+            let last_write = {
+                let lock = self.last_write_time.lock().unwrap();
+                *lock
+            };
+
+            if let Some(last_time) = last_write {
+                if last_time.elapsed() >= self.save_debounce_ms {
+                    // Clear dirty flag and last write time
+                    self.ram_dirty.store(false, Ordering::SeqCst);
+                    {
+                        let mut lock = self.last_write_time.lock().unwrap();
+                        *lock = None;
+                    }
+
+                    // Clone the current RAM and write in background
+                    let title = self.title.clone();
+                    let snapshot = self.ram.clone();
+                    std::thread::spawn(move || {
+                        let _ = Cartridge::persist_snapshot(&title, &snapshot);
+                    });
+                }
             }
         }
     }

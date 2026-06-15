@@ -235,6 +235,8 @@ impl GameBoy {
             // Advance PPU by the same number of cycles
             // Returns true when a frame is complete
             if self.ppu.step(step_result.cycles, &mut self.bus) {
+                // Check if cartridge needs to persist debounced RAM save
+                self.bus.cartridge_mut().update_save_debouncer();
                 return Ok(());
             }
         }
@@ -290,8 +292,8 @@ impl GameBoy {
         self.bus.cartridge().has_battery()
     }
 
-    /// Saves the current emulator state to a file.
-    pub fn save_state<P: AsRef<Path>>(&self, path: P) -> Result<(), GameBoyError> {
+    /// Serializes the emulator state to a byte vector.
+    pub fn save_state_to_memory(&self) -> Result<Vec<u8>, GameBoyError> {
         let config = bincode::config::standard();
         let mut bytes = Vec::new();
 
@@ -300,6 +302,12 @@ impl GameBoy {
         encode_section(&self.ppu, config, &mut bytes)?;
         encode_section(&self.cycles, config, &mut bytes)?;
 
+        Ok(bytes)
+    }
+
+    /// Saves the current emulator state to a file.
+    pub fn save_state<P: AsRef<Path>>(&self, path: P) -> Result<(), GameBoyError> {
+        let bytes = self.save_state_to_memory()?;
         fs::write(path, bytes).map_err(|e| GameBoyError::StateIo(e))
     }
 

@@ -145,7 +145,7 @@ fun EmulatorScreen() {
                         .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                         .build()
                 )
-                .setBufferSizeInBytes(minBufferSize.coerceAtLeast(16384))
+                .setBufferSizeInBytes(minBufferSize.coerceAtLeast(32768))
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 

@@ -123,8 +123,18 @@ pub extern "system" fn Java_com_emulator_gb_EmulatorBridge_saveState<'local>(
 
     let lock = EMULATOR.lock().unwrap();
     if let Some(ref gb) = *lock {
-        match gb.save_state(path_str) {
-            Ok(_) => JNI_TRUE,
+        match gb.save_state_to_memory() {
+            Ok(bytes) => {
+                // Drop the lock on EMULATOR immediately so the emulation loop
+                // is not blocked during disk write.
+                drop(lock);
+
+                // Write the state to file in a background thread.
+                std::thread::spawn(move || {
+                    let _ = std::fs::write(path_str, bytes);
+                });
+                JNI_TRUE
+            }
             Err(_) => JNI_FALSE,
         }
     } else {

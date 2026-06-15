@@ -493,6 +493,21 @@ mod test_serialization {
         let loaded = GameBoy::load_state(&path).expect("load state");
         assert_eq!(gb.total_cycles(), loaded.total_cycles());
     }
+
+    #[test]
+    fn serialize_and_deserialize_gameboy_running() {
+        let mut rom = vec![0u8; 0x8000];
+        rom[0x0147] = 0x00;
+        rom[0x0100] = 0x00;
+        let mut gb = GameBoy::from_rom_bytes(rom).expect("create gameboy");
+
+        let _ = gb.run_steps(100_000);
+
+        let path = std::env::temp_dir().join("gameboy_state_test_running.state");
+        gb.save_state(&path).expect("save state");
+        let loaded = GameBoy::load_state(&path).expect("load state");
+        assert_eq!(gb.total_cycles(), loaded.total_cycles());
+    }
 }
 
 #[cfg(test)]

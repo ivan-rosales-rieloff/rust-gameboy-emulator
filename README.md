@@ -10,6 +10,8 @@ This repository contains a modular emulator written in Rust with separate crates
 - `core-gba`: Game Boy Advance core (placeholder / extension for GBA features).
 - `core-common`: Shared runtime utilities and headless execution abstractions.
 - `frontend-desktop`: Desktop UI for loading ROMs, running the emulator, and displaying output.
+- `frontend-android-jni`: JNI shared library bridge for wrapping the emulator core.
+- `frontend-android`: Android Kotlin project using Jetpack Compose for touch inputs, audio playback, and rendering.
 
 ## Supported Use Cases
 
@@ -43,6 +45,8 @@ The frontend app allows you to:
 
 ## Build & Run
 
+### Desktop Frontend
+
 From the workspace root, build and run the desktop frontend:
 
 ```powershell
@@ -54,6 +58,25 @@ Or run the emulator tests for the `core-gb` crate:
 ```powershell
 cargo test -p core-gb
 ```
+
+### Android Frontend
+
+1. Install `cargo-ndk` and the Android targets:
+   ```powershell
+   cargo install cargo-ndk
+   rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+   ```
+
+2. Compile the Rust JNI library and place it in the Android project:
+   ```powershell
+   cargo ndk -t aarch64-linux-android -t x86_64-linux-android -o ./frontend-android/app/src/main/jniLibs build --release
+   ```
+
+3. Open the `frontend-android` folder in Android Studio, or build the APK using the gradle wrapper:
+   ```powershell
+   cd frontend-android
+   ./gradlew assembleDebug
+   ```
 
 ## Controls
 
@@ -109,3 +132,5 @@ This application was developed with the assistance of an AI code assistant.
 - `core-gb/` - Game Boy emulator implementation.
 - `core-gba/` - Game Boy Advance emulator implementation.
 - `frontend-desktop/` - desktop GUI and runtime launcher.
+- `frontend-android-jni/` - JNI bindings bridge crate.
+- `frontend-android/` - Android Kotlin application.

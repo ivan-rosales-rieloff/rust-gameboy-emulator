@@ -10,7 +10,6 @@ use rfd::FileDialog;
 mod network;
 use network::NetworkSettings;
 
-const PALETTE: [u32; 4] = [0x00FFFFFF, 0x00AAAAAA, 0x00555555, 0x00000000];
 
 // Joypad button bits (active high in our representation)
 const BTN_A: u8 = 0x01;
@@ -137,7 +136,7 @@ fn main() {
             {
                 match GameBoy::load_state(path) {
                     Ok(state) => {
-                        game_boy = Some(state);
+                        game_boy = Some(Box::new(state));
                         link_active = false;
                         network_settings.disconnect();
                     }
@@ -207,9 +206,7 @@ fn main() {
                 process::exit(1);
             }
 
-            for (pixel_index, &pixel_value) in game_boy.framebuffer().iter().enumerate() {
-                buffer[pixel_index] = PALETTE[pixel_value as usize];
-            }
+            buffer.copy_from_slice(game_boy.framebuffer());
 
             // Play audio samples
             let samples = game_boy.take_audio_samples();
@@ -247,11 +244,12 @@ fn save_current_game(game_boy: &GameBoy) {
     }
 }
 
-fn load_rom(path: PathBuf) -> Result<GameBoy, String> {
+fn load_rom(path: PathBuf) -> Result<Box<GameBoy>, String> {
     let rom_bytes = fs::read(&path)
         .map_err(|error| format!("Failed to read ROM at '{}': {error}", path.display()))?;
 
     GameBoy::from_rom_bytes(rom_bytes)
+        .map(Box::new)
         .map_err(|error| format!("Failed to initialize Game Boy core: {error}"))
 }
 

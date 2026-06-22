@@ -203,6 +203,8 @@ impl Cartridge {
             0x01 => (CartridgeKind::Mbc1, false),          // MBC1
             0x02 => (CartridgeKind::Mbc1Ram, false),       // MBC1+RAM
             0x03 => (CartridgeKind::Mbc1RamBattery, true), // MBC1+RAM+Battery
+            0x0F => (CartridgeKind::Mbc3RamBattery, true), // MBC3+TIMER+BATTERY
+            0x10 => (CartridgeKind::Mbc3RamBattery, true), // MBC3+TIMER+RAM+BATTERY
             0x11 => (CartridgeKind::Mbc3Ram, false),       // MBC3+RAM
             0x12 => (CartridgeKind::Mbc3Ram, false),       // MBC3+RAM
             0x13 => (CartridgeKind::Mbc3RamBattery, true), // MBC3+RAM+Battery
@@ -230,11 +232,17 @@ impl Cartridge {
         // Determine RAM size based on cartridge type
         let ram_size = match kind {
             CartridgeKind::RomOnly | CartridgeKind::Mbc1 | CartridgeKind::Mbc5 => 0, // No RAM
-            // MBC1/MBC3 with RAM: 4 banks of 8KB = 32KB total
+            // MBC1/MBC3 with RAM: 4 banks of 8KB = 32KB total (except type 0x0F which has no RAM)
             CartridgeKind::Mbc1Ram
             | CartridgeKind::Mbc1RamBattery
             | CartridgeKind::Mbc3Ram
-            | CartridgeKind::Mbc3RamBattery => RAM_BANK_SIZE * MAX_MBC1_RAM_BANKS,
+            | CartridgeKind::Mbc3RamBattery => {
+                if cartridge_type == 0x0F {
+                    0
+                } else {
+                    RAM_BANK_SIZE * MAX_MBC1_RAM_BANKS
+                }
+            }
             CartridgeKind::Mbc5Ram | CartridgeKind::Mbc5RamBattery => {
                 let ram_size_code = rom[0x0149];
                 let banks = match ram_size_code {
@@ -435,7 +443,7 @@ impl Cartridge {
                     }
                     0x4000..=0x5FFF => {
                         // RAM bank register (2 bits) or RTC register select
-                        self.ram_bank = value & 0x03;
+                        self.ram_bank = value;
                     }
                     0x6000..=0x7FFF => {
                         // Latch clock data (RTC functionality not implemented)
@@ -501,6 +509,14 @@ impl Cartridge {
                     return 0xFF; // RAM disabled
                 }
 
+                // If this is MBC3 and an RTC register is selected, return dummy value (RTC not implemented)
+                if (self.kind == CartridgeKind::Mbc3Ram || self.kind == CartridgeKind::Mbc3RamBattery)
+                    && self.ram_bank >= 0x08
+                    && self.ram_bank <= 0x0C
+                {
+                    return 0x00;
+                }
+
                 // Calculate RAM address with banking
                 let bank = self.current_ram_bank();
                 let offset = usize::from(bank) * RAM_BANK_SIZE + usize::from(address - 0xA000);
@@ -531,6 +547,14 @@ impl Cartridge {
             | CartridgeKind::Mbc5RamBattery => {
                 if !self.ram_enabled {
                     return; // RAM disabled - ignore write
+                }
+
+                // If this is MBC3 and an RTC register is selected, ignore write (RTC not implemented)
+                if (self.kind == CartridgeKind::Mbc3Ram || self.kind == CartridgeKind::Mbc3RamBattery)
+                    && self.ram_bank >= 0x08
+                    && self.ram_bank <= 0x0C
+                {
+                    return;
                 }
 
                 // Calculate RAM address with banking

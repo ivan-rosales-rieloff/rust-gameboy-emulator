@@ -150,6 +150,18 @@ pub struct Cpu {
 }
 
 impl Cpu {
+    /// Initializes registers to GBC boot values.
+    pub fn init_cgb_registers(&mut self) {
+        self.registers.a = 0x11;
+        self.registers.f = 0x80;
+        self.registers.b = 0x00;
+        self.registers.c = 0x00;
+        self.registers.d = 0xFF;
+        self.registers.e = 0x56;
+        self.registers.h = 0x00;
+        self.registers.l = 0x0D;
+    }
+
     /// Returns the current program counter value.
     pub fn pc(&self) -> u16 {
         self.registers.pc
@@ -548,6 +560,25 @@ impl Cpu {
         let step_result = match opcode {
             // NOP - No operation (4 cycles)
             0x00 => StepResult::new(4, false),
+
+            0x10 => {
+                // STOP - 2-byte instruction (stops CPU / switches speed in GBC)
+                let _dummy = self.fetch8(bus);
+                if bus.is_cgb {
+                    if bus.key1 & 0x01 != 0 {
+                        // Toggle speed bit (bit 7) and clear prepare bit (bit 0)
+                        bus.key1 = (bus.key1 ^ 0x80) & 0x80;
+                        // Speed transition takes 20512 cycles
+                        StepResult::new(20512, false)
+                    } else {
+                        self.halted = true;
+                        StepResult::new(4, true)
+                    }
+                } else {
+                    self.halted = true;
+                    StepResult::new(4, true)
+                }
+            }
 
             0x08 => {
                 // LD (a16), SP - Load SP into address a16

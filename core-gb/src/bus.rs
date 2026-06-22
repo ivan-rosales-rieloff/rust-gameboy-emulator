@@ -155,6 +155,8 @@ pub struct Bus {
     pub vbk: u8,
     /// GBC WRAM bank selector (0xFF70)
     pub svbk: u8,
+    /// GBC KEY1 Speed Switch register (0xFF4D)
+    pub key1: u8,
     /// GBC Background Palette Memory (64 bytes, 8 palettes x 4 colors x 2 bytes)
     #[serde(with = "serde_array")]
     pub bg_palette_ram: [u8; 64],
@@ -165,6 +167,14 @@ pub struct Bus {
     pub bg_palette_idx: u8,
     /// GBC Sprite Palette Index Register (0xFF6A)
     pub sp_palette_idx: u8,
+    /// GBC HDMA source address
+    pub hdma_source: u16,
+    /// GBC HDMA destination address
+    pub hdma_dest: u16,
+    /// GBC HDMA remaining 16-byte blocks
+    pub hdma_remaining_blocks: u8,
+    /// GBC HDMA active flag
+    pub hdma_active: bool,
 }
 
 impl std::fmt::Debug for Bus {
@@ -186,6 +196,7 @@ impl std::fmt::Debug for Bus {
             .field("is_cgb", &self.is_cgb)
             .field("vbk", &self.vbk)
             .field("svbk", &self.svbk)
+            .field("key1", &self.key1)
             .field("bg_palette_idx", &self.bg_palette_idx)
             .field("sp_palette_idx", &self.sp_palette_idx)
             .finish()
@@ -193,6 +204,30 @@ impl std::fmt::Debug for Bus {
 }
 
 impl Bus {
+    /// Returns true if Game Boy Color double speed mode is currently active.
+    pub fn double_speed_active(&self) -> bool {
+        self.is_cgb && (self.key1 & 0x80) != 0
+    }
+
+    /// Triggers a 16-byte transfer for H-Blank DMA if active.
+    pub fn tick_hdma(&mut self) {
+        if self.is_cgb && self.hdma_active {
+            for offset in 0..16 {
+                let val = self.read8(self.hdma_source + offset);
+                self.write8(self.hdma_dest + offset, val);
+            }
+            self.hdma_source = self.hdma_source.wrapping_add(16);
+            self.hdma_dest = self.hdma_dest.wrapping_add(16);
+            self.hdma_remaining_blocks = self.hdma_remaining_blocks.wrapping_sub(1);
+            if self.hdma_remaining_blocks == 0 {
+                self.hdma_active = false;
+                self.io[0x55] = 0xFF; // Completed
+            } else {
+                self.io[0x55] = self.hdma_remaining_blocks.wrapping_sub(1);
+            }
+        }
+    }
+
     /// Creates a new memory bus with the specified cartridge.
     ///
     /// Initializes all memory regions and sets up default I/O register values
@@ -290,10 +325,15 @@ impl Bus {
             is_cgb,
             vbk: 0,
             svbk: 0,
+            key1: 0x7E,
             bg_palette_ram: [0; 64],
             sp_palette_ram: [0; 64],
             bg_palette_idx: 0,
             sp_palette_idx: 0,
+            hdma_source: 0,
+            hdma_dest: 0,
+            hdma_remaining_blocks: 0,
+            hdma_active: false,
         }
     }
 
@@ -412,8 +452,20 @@ impl Bus {
             0xFF01..=0xFF7F => {
                 let io_idx = usize::from(address - 0xFF00);
                 let value = match address {
+                    0xFF4D => if self.is_cgb { self.key1 | 0x7E } else { 0xFF },
                     0xFF4F => self.vbk | 0xFE,
                     0xFF70 => self.svbk | 0xF8,
+                    0xFF55 => {
+                        if self.is_cgb {
+                            if self.hdma_active {
+                                self.hdma_remaining_blocks.wrapping_sub(1)
+                            } else {
+                                self.io[0x55]
+                            }
+                        } else {
+                            0xFF
+                        }
+                    }
                     0xFF68 => self.bg_palette_idx | 0x40,
                     0xFF69 => self.bg_palette_ram[usize::from(self.bg_palette_idx & 0x3F)],
                     0xFF6A => self.sp_palette_idx | 0x40,
@@ -561,6 +613,12 @@ impl Bus {
 
                 // Intercept GBC specific register writes
                 match address {
+                    // KEY1: GBC speed switch prepare register (0xFF4D). Only Bit 0 is writable.
+                    0xFF4D => {
+                        if self.is_cgb {
+                            self.key1 = (self.key1 & 0x80) | (value & 0x01);
+                        }
+                    }
                     // VBK: GBC VRAM Bank Select (0xFF4F). Only Bit 0 is writable.
                     // Allows selecting active 8KB VRAM bank 0 or bank 1.
                     0xFF4F => {
@@ -571,6 +629,54 @@ impl Bus {
                     // A value of 0 is automatically handled as WRAM bank 1.
                     0xFF70 => {
                         self.svbk = value & 0x07;
+                    }
+                    0xFF51 => {
+                        if self.is_cgb {
+                            self.io[0x51] = value;
+                        }
+                    }
+                    0xFF52 => {
+                        if self.is_cgb {
+                            self.io[0x52] = value & 0xF0;
+                        }
+                    }
+                    0xFF53 => {
+                        if self.is_cgb {
+                            self.io[0x53] = value & 0x1F;
+                        }
+                    }
+                    0xFF54 => {
+                        if self.is_cgb {
+                            self.io[0x54] = value & 0xF0;
+                        }
+                    }
+                    0xFF55 => {
+                        if self.is_cgb {
+                            if self.hdma_active && (value & 0x80) == 0 {
+                                self.hdma_active = false;
+                                self.io[0x55] = 0x80 | self.hdma_remaining_blocks.wrapping_sub(1);
+                            } else {
+                                let source = (u16::from(self.io[0x51]) << 8 | u16::from(self.io[0x52])) & 0xFFF0;
+                                let dest = 0x8000 | ((u16::from(self.io[0x53]) << 8 | u16::from(self.io[0x54])) & 0x1FF0);
+                                let len = (value & 0x7F) + 1;
+                                let is_hblank_mode = (value & 0x80) != 0;
+
+                                if is_hblank_mode {
+                                    self.hdma_source = source;
+                                    self.hdma_dest = dest;
+                                    self.hdma_remaining_blocks = len;
+                                    self.hdma_active = true;
+                                    self.io[0x55] = value & 0x7F;
+                                } else {
+                                    self.hdma_active = false;
+                                    for i in 0..(u16::from(len) * 16) {
+                                        let val = self.read8(source + i);
+                                        self.write8(dest + i, val);
+                                    }
+                                    self.io[0x55] = 0xFF;
+                                }
+                            }
+                        }
                     }
                     // BGPI: GBC Background Palette Index Register (0xFF68).
                     // Bit 7 is Auto-Increment (1=Enable, 0=Disable).
@@ -772,5 +878,12 @@ impl Bus {
         self.serial_sc &= !0x80;
         self.io[0x02] = self.serial_sc;
         self.request_interrupt(0x08);
+    }
+
+    /// Reads from cartridge VRAM directly specifying the bank (0 or 1) and VRAM offset (0x0000-0x1FFF).
+    pub fn read_vram_bank(&self, bank: u8, offset: u16) -> u8 {
+        let bank_idx = usize::from(bank & 1);
+        let idx = bank_idx * 0x2000 + usize::from(offset & 0x1FFF);
+        self.vram[idx]
     }
 }

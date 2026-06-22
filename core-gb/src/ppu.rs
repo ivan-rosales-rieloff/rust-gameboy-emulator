@@ -101,10 +101,13 @@ pub const SCREEN_HEIGHT: usize = 144;
 /// - Framebuffer management
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ppu {
-    /// The final rendered image (160x144 pixels, 1 byte per pixel)
-    /// Each pixel contains a palette index (0-3) representing shade
+    /// The final rendered image (160x144 pixels, 32-bit ARGB/XRGB color per pixel)
+    #[serde(with = "serde_array::u32_array")]
+    pub framebuffer: [u32; SCREEN_WIDTH * SCREEN_HEIGHT],
+
+    /// Metadata about background pixels (color index, priority) for sprite rendering
     #[serde(with = "serde_array")]
-    pub framebuffer: [u8; SCREEN_WIDTH * SCREEN_HEIGHT],
+    pub bg_pixel_info: [u8; SCREEN_WIDTH * SCREEN_HEIGHT],
 
     /// Cycle counter for timing scanline progression
     cycle_counter: u32,
@@ -122,7 +125,8 @@ impl Default for Ppu {
     /// Creates a PPU in default state (LCD off, blank screen)
     fn default() -> Self {
         Self {
-            framebuffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT],
+            framebuffer: [0xFFFFFFFF; SCREEN_WIDTH * SCREEN_HEIGHT], // Initialize to white
+            bg_pixel_info: [0; SCREEN_WIDTH * SCREEN_HEIGHT],
             cycle_counter: 0,
             scanline: 0,
             frame_counter: 0,
@@ -162,6 +166,14 @@ impl Ppu {
         while self.cycle_counter >= SCANLINE_CYCLES {
             self.cycle_counter -= SCANLINE_CYCLES;
             self.scanline = self.scanline.wrapping_add(1);
+
+            // Tick HDMA once per completed scanline.
+            // On real GBC hardware, H-Blank DMA transfers 16 bytes per scanline
+            // during the HBlank period — including VBlank scanlines (144-153).
+            // Previously tick_hdma was only called on mode 0 transitions, which
+            // never occur during VBlank (always mode 1), causing games that start
+            // HDMA during VBlank to freeze while polling FF55.
+            bus.tick_hdma();
 
             // VBlank starts at scanline 144
             if self.scanline == 144 {
@@ -263,9 +275,8 @@ impl Ppu {
 
     /// Returns a reference to the current framebuffer.
     ///
-    /// The framebuffer contains the rendered image as palette indices (0-3).
-    /// To get actual colors, these indices must be mapped through the palette.
-    pub fn framebuffer(&self) -> &[u8; SCREEN_WIDTH * SCREEN_HEIGHT] {
+    /// The framebuffer contains the rendered image as 32-bit colors.
+    pub fn framebuffer(&self) -> &[u32; SCREEN_WIDTH * SCREEN_HEIGHT] {
         &self.framebuffer
     }
 
@@ -281,11 +292,15 @@ impl Ppu {
     fn render_frame(&mut self, bus: &Bus) {
         // Read LCD control register to determine what to render
         let lcdc = bus.read8(0xFF40);
-        let bg_enabled = lcdc & 0x01 != 0; // Bit 0: BG enable
+        let is_cgb = bus.is_cgb;
+        
+        // GBC background display is always enabled for priority purposes even if bit 0 is 0
+        let bg_enabled = (lcdc & 0x01) != 0 || is_cgb;
 
-        // If background is disabled, clear screen to color 0
+        // If background is disabled, clear screen to white (color 0)
         if !bg_enabled {
-            self.framebuffer.fill(0);
+            self.framebuffer.fill(0x00FFFFFF);
+            self.bg_pixel_info.fill(0);
             return;
         }
 
@@ -314,7 +329,7 @@ impl Ppu {
                 let in_window =
                     win_enabled && wy < SCREEN_HEIGHT && y >= wy && (x as i32) >= win_x_start;
 
-                let (map_y, tile_line, map_x, tile_col, map_base) = if in_window {
+                let (map_y, mut tile_line, map_x, mut tile_col, map_base) = if in_window {
                     let window_x = (x as i32 - win_x_start) as usize;
                     let window_y = y - wy;
                     (
@@ -334,9 +349,32 @@ impl Ppu {
                     )
                 };
 
-                // Get tile index from the appropriate map
+                // Get tile index from the appropriate map in Bank 0
                 let tile_index_addr = map_base + (map_y * 32 + map_x) as u16;
-                let tile_index = bus.read8(tile_index_addr);
+                let tile_offset = tile_index_addr - 0x8000;
+                let tile_index = bus.read_vram_bank(0, tile_offset);
+
+                // GBC background attributes
+                let (palette_num, vram_bank, x_flip, y_flip, priority) = if bus.is_cgb {
+                    let attr = bus.read_vram_bank(1, tile_offset);
+                    (
+                        attr & 0x07,
+                        (attr >> 3) & 0x01,
+                        (attr & 0x20) != 0,
+                        (attr & 0x40) != 0,
+                        (attr & 0x80) != 0,
+                    )
+                } else {
+                    (0, 0, false, false, false)
+                };
+
+                // Apply flipping
+                if y_flip {
+                    tile_line = 7 - tile_line;
+                }
+                if x_flip {
+                    tile_col = 7 - tile_col;
+                }
 
                 // Calculate tile data address based on addressing mode
                 let tile_addr = if tile_data_signed {
@@ -348,20 +386,45 @@ impl Ppu {
                     0x8000u16 + u16::from(tile_index) * 16
                 };
 
-                // Get the two bytes for this pixel row (8 pixels, 2 bits each)
-                let line_addr = tile_addr.wrapping_add(tile_line * 2);
-                let b1 = bus.read8(line_addr); // Low bit plane
-                let b2 = bus.read8(line_addr.wrapping_add(1)); // High bit plane
+                // Get the two bytes for this pixel row (8 pixels, 2 bits each) from the selected VRAM bank
+                let line_offset = tile_addr.wrapping_add(tile_line * 2) - 0x8000;
+                let b1 = bus.read_vram_bank(vram_bank, line_offset); // Low bit plane
+                let b2 = bus.read_vram_bank(vram_bank, line_offset + 1); // High bit plane
 
                 // Extract color index for this pixel (2 bits)
                 let bit = 7 - tile_col; // MSB first (bit 7 = leftmost pixel)
                 let color_index = ((b2 >> bit) & 1) << 1 | ((b1 >> bit) & 1);
 
-                // Apply palette to get final shade (0-3)
-                let shade = (palette >> (color_index * 2)) & 0x03;
+                // Map index to final color
+                let pixel_idx = y * SCREEN_WIDTH + x;
+                let final_color = if bus.is_cgb {
+                    let pal_offset = usize::from(palette_num) * 8 + usize::from(color_index) * 2;
+                    let low = bus.bg_palette_ram[pal_offset];
+                    let high = bus.bg_palette_ram[pal_offset + 1];
+                    let rgb555 = u16::from(high) << 8 | u16::from(low);
+                    
+                    let r = (rgb555 & 0x1F) as u32;
+                    let g = ((rgb555 >> 5) & 0x1F) as u32;
+                    let b = ((rgb555 >> 10) & 0x1F) as u32;
+                    
+                    let r8 = (r << 3) | (r >> 2);
+                    let g8 = (g << 3) | (g >> 2);
+                    let b8 = (b << 3) | (b >> 2);
+                    
+                    (r8 << 16) | (g8 << 8) | b8
+                } else {
+                    let shade = (palette >> (color_index * 2)) & 0x03;
+                    match shade {
+                        0 => 0x00FFFFFF,
+                        1 => 0x00AAAAAA,
+                        2 => 0x00555555,
+                        _ => 0x00000000,
+                    }
+                };
 
-                // Store pixel in framebuffer
-                self.framebuffer[y * SCREEN_WIDTH + x] = shade;
+                // Store background metadata for sprite priority check
+                self.bg_pixel_info[pixel_idx] = color_index | (if priority { 0x80 } else { 0x00 });
+                self.framebuffer[pixel_idx] = final_color;
             }
         }
 
@@ -388,13 +451,13 @@ impl Ppu {
         // Determine sprite height from LCDC bit 2
         let sprite_height = if lcdc & 0x04 != 0 { 16 } else { 8 };
 
-        // OAM base address and sprite palettes
+        // OAM base address and sprite palettes (for DMG mode)
         let oam_base = 0xFE00u16;
         let palette0 = bus.read8(0xFF48); // Object palette 0
         let palette1 = bus.read8(0xFF49); // Object palette 1
 
-        // Process all 40 sprites in OAM (Game Boy doesn't sort by priority)
-        for sprite_idx in 0..40 {
+        // Process all 40 sprites in OAM in reverse order so lower index has priority
+        for sprite_idx in (0..40).rev() {
             let oam_offset = (sprite_idx * 4) as u16;
 
             // Read sprite attributes from OAM
@@ -407,8 +470,13 @@ impl Ppu {
             let priority = attributes & 0x80 != 0; // Bit 7: Priority (0=above BG, 1=behind BG)
             let y_flip = attributes & 0x40 != 0; // Bit 6: Vertical flip
             let x_flip = attributes & 0x20 != 0; // Bit 5: Horizontal flip
-            let palette_num = attributes & 0x10 != 0; // Bit 4: Palette select (0=OBP0, 1=OBP1)
-            let palette = if palette_num { palette1 } else { palette0 };
+            
+            // GBC specific vs DMG specific attributes
+            let (palette_num, vram_bank) = if bus.is_cgb {
+                (attributes & 0x07, (attributes >> 3) & 0x01)
+            } else {
+                (if attributes & 0x10 != 0 { 1 } else { 0 }, 0)
+            };
 
             // Render each pixel row of the sprite
             for sy in 0..sprite_height {
@@ -434,9 +502,10 @@ impl Ppu {
                     0x8000u16 + u16::from(tile_number) * 16 + tile_y * 2
                 };
 
-                // Read tile data for this row
-                let b1 = bus.read8(tile_addr);
-                let b2 = bus.read8(tile_addr + 1);
+                // Read tile data for this row from the appropriate VRAM bank
+                let offset = tile_addr - 0x8000;
+                let b1 = bus.read_vram_bank(vram_bank, offset);
+                let b2 = bus.read_vram_bank(vram_bank, offset + 1);
 
                 // Render each pixel in the row
                 for sx in 0..8 {
@@ -457,20 +526,60 @@ impl Ppu {
                         continue;
                     }
 
-                    // Apply palette to get final shade
-                    let shade = (palette >> (color_index * 2)) & 0x03;
+                    // Map color index to final 32-bit color
+                    let final_color = if bus.is_cgb {
+                        let pal_offset = usize::from(palette_num) * 8 + usize::from(color_index) * 2;
+                        let low = bus.sp_palette_ram[pal_offset];
+                        let high = bus.sp_palette_ram[pal_offset + 1];
+                        let rgb555 = u16::from(high) << 8 | u16::from(low);
+                        
+                        let r = (rgb555 & 0x1F) as u32;
+                        let g = ((rgb555 >> 5) & 0x1F) as u32;
+                        let b = ((rgb555 >> 10) & 0x1F) as u32;
+                        
+                        let r8 = (r << 3) | (r >> 2);
+                        let g8 = (g << 3) | (g >> 2);
+                        let b8 = (b << 3) | (b >> 2);
+                        
+                        (r8 << 16) | (g8 << 8) | b8
+                    } else {
+                        let palette_reg = if palette_num == 1 { palette1 } else { palette0 };
+                        let shade = (palette_reg >> (color_index * 2)) & 0x03;
+                        match shade {
+                            0 => 0x00FFFFFF,
+                            1 => 0x00AAAAAA,
+                            2 => 0x00555555,
+                            _ => 0x00000000,
+                        }
+                    };
+
                     let pixel_idx = (screen_y as usize) * SCREEN_WIDTH + (screen_x as usize);
 
                     // Handle sprite priority
-                    if priority {
-                        // Behind background: only draw if background pixel is color 0
-                        let bg_color = self.framebuffer[pixel_idx];
-                        if bg_color == 0 {
-                            self.framebuffer[pixel_idx] = shade;
+                    let bg_info = self.bg_pixel_info[pixel_idx];
+                    let bg_color_idx = bg_info & 0x03;
+                    let bg_has_priority = (bg_info & 0x80) != 0;
+
+                    let sprite_behind_bg = if bus.is_cgb {
+                        if (lcdc & 0x01) == 0 {
+                            true
+                        } else if bg_has_priority {
+                            true
+                        } else {
+                            priority
                         }
                     } else {
-                        // In front of background: always draw
-                        self.framebuffer[pixel_idx] = shade;
+                        priority
+                    };
+
+                    let draw = if bg_color_idx == 0 {
+                        true // BG color 0 is always transparent to sprites
+                    } else {
+                        !sprite_behind_bg
+                    };
+
+                    if draw {
+                        self.framebuffer[pixel_idx] = final_color;
                     }
                 }
             }

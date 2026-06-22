@@ -813,4 +813,78 @@ mod tests {
         assert_eq!(game_boy.registers().f & 0x10, 0x10); // carry flag set
         assert_eq!(game_boy.registers().f & 0x80, 0x00); // zero flag NOT set
     }
+
+    #[test]
+    fn supports_mbc5_rom_bank_switching() {
+        let mut rom = make_rom(&[
+            0x3E, 0x02,         // LD A,$02
+            0xEA, 0x00, 0x20,   // LD ($2000),A -> Set lower 8 bits of ROM bank to 2
+            0xFA, 0x00, 0x40,   // LD A,($4000) -> Read from bank 2
+            0x76,               // HALT
+        ], 0x1B, "MBC5BANK");
+        
+        rom.resize(0x4000 * 3, 0);
+        let bank2_data = 0x55;
+        rom[2 * 0x4000] = bank2_data;
+
+        let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
+        let stats = game_boy.run_steps(5).unwrap();
+
+        assert_eq!(stats.instructions, 4);
+        assert!(stats.halted);
+        assert_eq!(game_boy.registers().a, bank2_data);
+    }
+
+    #[test]
+    fn supports_mbc5_rom_bank_zero_mapping() {
+        let mut rom = make_rom(&[
+            0x3E, 0x00,         // LD A,$00
+            0xEA, 0x00, 0x20,   // LD ($2000),A -> Set lower 8 bits of ROM bank to 0
+            0xFA, 0x00, 0x40,   // LD A,($4000) -> Read from bank 0 (at 0x4000)
+            0x76,               // HALT
+        ], 0x1B, "MBC5ZERO");
+        
+        let bank0_data = 0xAA;
+        rom[0] = bank0_data;
+
+        let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
+        let stats = game_boy.run_steps(5).unwrap();
+
+        assert_eq!(stats.instructions, 4);
+        assert!(stats.halted);
+        assert_eq!(game_boy.registers().a, bank0_data);
+    }
+
+    #[test]
+    fn supports_mbc5_ram_banking() {
+        let mut rom = make_rom(&[
+            0x3E, 0x0A,         // LD A,$0A
+            0xEA, 0x00, 0x18,   // LD ($1800),A -> Enable RAM
+            
+            0x3E, 0x00,         // LD A,$00
+            0xEA, 0x00, 0x40,   // LD ($4000),A -> Set RAM bank to 0
+            0x3E, 0x42,         // LD A,$42
+            0xEA, 0x00, 0xA0,   // LD ($A000),A -> Write 0x42 to RAM bank 0
+            
+            0x3E, 0x01,         // LD A,$01
+            0xEA, 0x00, 0x40,   // LD ($4000),A -> Set RAM bank to 1
+            0x3E, 0x99,         // LD A,$99
+            0xEA, 0x00, 0xA0,   // LD ($A000),A -> Write 0x99 to RAM bank 1
+            
+            0x3E, 0x00,         // LD A,$00
+            0xEA, 0x00, 0x40,   // LD ($4000),A -> Set RAM bank to 0
+            0xFA, 0x00, 0xA0,   // LD A,($A000) -> Read from RAM bank 0 (should be 0x42)
+            
+            0x76,               // HALT
+        ], 0x1B, "MBC5RAM");
+        
+        rom[0x0149] = 0x03; // 4 banks
+
+        let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
+        let stats = game_boy.run_steps(30).unwrap();
+        
+        assert!(stats.halted);
+        assert_eq!(game_boy.registers().a, 0x42);
+    }
 }
+

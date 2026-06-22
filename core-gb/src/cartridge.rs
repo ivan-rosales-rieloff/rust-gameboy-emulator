@@ -109,12 +109,18 @@ enum CartridgeKind {
     Mbc3Ram,
     /// MBC3 with RAM and battery backup
     Mbc3RamBattery,
+    /// MBC5 - ROM banking only
+    Mbc5,
+    /// MBC5 with RAM (no battery)
+    Mbc5Ram,
+    /// MBC5 with RAM and battery backup
+    Mbc5RamBattery,
 }
 
 /// Game Boy cartridge emulator.
 ///
 /// Handles ROM loading, MBC banking logic, RAM management, and save file I/O.
-/// Supports ROM-only, MBC1, and MBC3 cartridges with various RAM configurations.
+/// Supports ROM-only, MBC1, MBC3, and MBC5 cartridges with various RAM configurations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cartridge {
     /// Complete ROM data (may be multiple banks)
@@ -130,7 +136,7 @@ pub struct Cartridge {
     ram: Vec<u8>,
 
     /// Current ROM bank register (affects 0x4000-0x7FFF)
-    rom_bank: u8,
+    rom_bank: u16,
 
     /// Current RAM bank register (affects 0xA000-0xBFFF)
     ram_bank: u8,
@@ -178,6 +184,9 @@ impl Cartridge {
     /// - 0x11: MBC3+RAM
     /// - 0x12: MBC3+RAM
     /// - 0x13: MBC3+RAM+Battery
+    /// - 0x19: MBC5
+    /// - 0x1A: MBC5+RAM
+    /// - 0x1B: MBC5+RAM+Battery
     pub fn from_rom(rom: Vec<u8>) -> Result<Self, CartridgeError> {
         // Validate minimum ROM size
         if rom.len() < MIN_ROM_SIZE {
@@ -197,6 +206,9 @@ impl Cartridge {
             0x11 => (CartridgeKind::Mbc3Ram, false),       // MBC3+RAM
             0x12 => (CartridgeKind::Mbc3Ram, false),       // MBC3+RAM
             0x13 => (CartridgeKind::Mbc3RamBattery, true), // MBC3+RAM+Battery
+            0x19 => (CartridgeKind::Mbc5, false),          // MBC5
+            0x1A => (CartridgeKind::Mbc5Ram, false),       // MBC5+RAM
+            0x1B => (CartridgeKind::Mbc5RamBattery, true), // MBC5+RAM+Battery
             _ => return Err(CartridgeError::UnsupportedCartridgeType(cartridge_type)),
         };
 
@@ -217,13 +229,25 @@ impl Cartridge {
 
         // Determine RAM size based on cartridge type
         let ram_size = match kind {
-            CartridgeKind::RomOnly => 0, // No RAM
-            CartridgeKind::Mbc1 => 0,    // No RAM
+            CartridgeKind::RomOnly | CartridgeKind::Mbc1 | CartridgeKind::Mbc5 => 0, // No RAM
             // MBC1/MBC3 with RAM: 4 banks of 8KB = 32KB total
             CartridgeKind::Mbc1Ram
             | CartridgeKind::Mbc1RamBattery
             | CartridgeKind::Mbc3Ram
             | CartridgeKind::Mbc3RamBattery => RAM_BANK_SIZE * MAX_MBC1_RAM_BANKS,
+            CartridgeKind::Mbc5Ram | CartridgeKind::Mbc5RamBattery => {
+                let ram_size_code = rom[0x0149];
+                let banks = match ram_size_code {
+                    0x00 => 0,
+                    0x01 => 1,
+                    0x02 => 1,
+                    0x03 => 4,
+                    0x04 => 16,
+                    0x05 => 8,
+                    _ => 4, // Fallback to 32KB
+                };
+                RAM_BANK_SIZE * banks
+            }
         };
 
         // GBC compatibility flag is specified at address 0x0143 in the cartridge header.
@@ -261,7 +285,7 @@ impl Cartridge {
     ///
     /// Different MBCs have different banking logic and bank number ranges.
     /// Bank 0 is always accessible at 0x0000-0x3FFF, so this returns banks 1+.
-    fn current_rom_bank(&self) -> u8 {
+    fn current_rom_bank(&self) -> u16 {
         match self.kind {
             CartridgeKind::RomOnly => 1, // Fixed bank 1 (effectively bank 0)
 
@@ -275,7 +299,7 @@ impl Cartridge {
 
                 // In ROM banking mode, upper bits come from RAM bank register
                 if self.banking_mode == 0 {
-                    bank |= (self.ram_bank & 0x03) << 5; // Add upper 2 bits
+                    bank |= (u16::from(self.ram_bank) & 0x03) << 5; // Add upper 2 bits
                 }
 
                 bank
@@ -291,6 +315,10 @@ impl Cartridge {
 
                 bank
             }
+
+            CartridgeKind::Mbc5 | CartridgeKind::Mbc5Ram | CartridgeKind::Mbc5RamBattery => {
+                self.rom_bank & 0x1FF
+            }
         }
     }
 
@@ -300,7 +328,7 @@ impl Cartridge {
     /// with some MBC-specific masking.
     fn current_ram_bank(&self) -> u8 {
         match self.kind {
-            CartridgeKind::RomOnly => 0, // No banking
+            CartridgeKind::RomOnly | CartridgeKind::Mbc5 => 0, // No banking
             CartridgeKind::Mbc1 | CartridgeKind::Mbc1Ram | CartridgeKind::Mbc1RamBattery => {
                 if self.banking_mode == 0 {
                     0 // ROM banking mode uses bank 0
@@ -310,6 +338,9 @@ impl Cartridge {
             }
             CartridgeKind::Mbc3Ram | CartridgeKind::Mbc3RamBattery => {
                 self.ram_bank & 0x03 // Always use lower 2 bits
+            }
+            CartridgeKind::Mbc5Ram | CartridgeKind::Mbc5RamBattery => {
+                self.ram_bank & 0x0F // Mask lower 4 bits (up to 16 RAM banks)
             }
         }
     }
@@ -335,7 +366,10 @@ impl Cartridge {
             | CartridgeKind::Mbc1Ram
             | CartridgeKind::Mbc1RamBattery
             | CartridgeKind::Mbc3Ram
-            | CartridgeKind::Mbc3RamBattery => {
+            | CartridgeKind::Mbc3RamBattery
+            | CartridgeKind::Mbc5
+            | CartridgeKind::Mbc5Ram
+            | CartridgeKind::Mbc5RamBattery => {
                 match address {
                     0x0000..=0x3FFF => {
                         // Bank 0 - always accessible
@@ -374,7 +408,7 @@ impl Cartridge {
                     0x2000..=0x3FFF => {
                         // ROM bank register (lower 5 bits)
                         let bank = value & 0x1F;
-                        self.rom_bank = if bank == 0 { 1 } else { bank }; // Bank 0 -> 1
+                        self.rom_bank = if bank == 0 { 1 } else { u16::from(bank) }; // Bank 0 -> 1
                     }
                     0x4000..=0x5FFF => {
                         // RAM bank register (2 bits) or upper ROM bank bits
@@ -397,7 +431,7 @@ impl Cartridge {
                     0x2000..=0x3FFF => {
                         // ROM bank register (7 bits)
                         let bank = value & 0x7F;
-                        self.rom_bank = if bank == 0 { 1 } else { bank }; // Bank 0 -> 1
+                        self.rom_bank = if bank == 0 { 1 } else { u16::from(bank) }; // Bank 0 -> 1
                     }
                     0x4000..=0x5FFF => {
                         // RAM bank register (2 bits) or RTC register select
@@ -405,6 +439,30 @@ impl Cartridge {
                     }
                     0x6000..=0x7FFF => {
                         // Latch clock data (RTC functionality not implemented)
+                    }
+                    _ => {} // Invalid range
+                }
+            }
+
+            CartridgeKind::Mbc5 | CartridgeKind::Mbc5Ram | CartridgeKind::Mbc5RamBattery => {
+                match address {
+                    0x0000..=0x1FFF => {
+                        // RAM enable/disable register
+                        // Writing 0x0A enables RAM, any other value disables it
+                        self.ram_enabled = (value & 0x0F) == 0x0A;
+                    }
+                    0x2000..=0x2FFF => {
+                        // ROM bank register (lower 8 bits)
+                        self.rom_bank = (self.rom_bank & 0x0100) | u16::from(value);
+                    }
+                    0x3000..=0x3FFF => {
+                        // ROM bank register (9th bit)
+                        let bit_9 = u16::from(value & 0x01);
+                        self.rom_bank = (self.rom_bank & 0x00FF) | (bit_9 << 8);
+                    }
+                    0x4000..=0x5FFF => {
+                        // RAM bank register (4 bits, up to 16 banks)
+                        self.ram_bank = value & 0x0F;
                     }
                     _ => {} // Invalid range
                 }
@@ -428,7 +486,7 @@ impl Cartridge {
     /// * RAM byte at the specified address, or 0xFF if inaccessible
     pub fn read_ram(&self, address: u16) -> u8 {
         match self.kind {
-            CartridgeKind::RomOnly | CartridgeKind::Mbc1 => {
+            CartridgeKind::RomOnly | CartridgeKind::Mbc1 | CartridgeKind::Mbc5 => {
                 // No RAM present
                 0xFF
             }
@@ -436,7 +494,9 @@ impl Cartridge {
             CartridgeKind::Mbc1Ram
             | CartridgeKind::Mbc1RamBattery
             | CartridgeKind::Mbc3Ram
-            | CartridgeKind::Mbc3RamBattery => {
+            | CartridgeKind::Mbc3RamBattery
+            | CartridgeKind::Mbc5Ram
+            | CartridgeKind::Mbc5RamBattery => {
                 if !self.ram_enabled {
                     return 0xFF; // RAM disabled
                 }
@@ -459,14 +519,16 @@ impl Cartridge {
     /// * `value` - Value to write
     pub fn write_ram(&mut self, address: u16, value: u8) {
         match self.kind {
-            CartridgeKind::RomOnly | CartridgeKind::Mbc1 => {
+            CartridgeKind::RomOnly | CartridgeKind::Mbc1 | CartridgeKind::Mbc5 => {
                 // No RAM present - ignore write
             }
 
             CartridgeKind::Mbc1Ram
             | CartridgeKind::Mbc1RamBattery
             | CartridgeKind::Mbc3Ram
-            | CartridgeKind::Mbc3RamBattery => {
+            | CartridgeKind::Mbc3RamBattery
+            | CartridgeKind::Mbc5Ram
+            | CartridgeKind::Mbc5RamBattery => {
                 if !self.ram_enabled {
                     return; // RAM disabled - ignore write
                 }
@@ -476,14 +538,14 @@ impl Cartridge {
                 let offset = usize::from(bank) * RAM_BANK_SIZE + usize::from(address - 0xA000);
 
                 // Write to RAM if address is valid
-                    if let Some(slot) = self.ram.get_mut(offset) {
-                        *slot = value;
-                        if self.has_battery {
-                            self.ram_dirty.store(true, Ordering::SeqCst);
-                            let mut lock = self.last_write_time.lock().unwrap();
-                            *lock = Some(std::time::Instant::now());
-                        }
+                if let Some(slot) = self.ram.get_mut(offset) {
+                    *slot = value;
+                    if self.has_battery {
+                        self.ram_dirty.store(true, Ordering::SeqCst);
+                        let mut lock = self.last_write_time.lock().unwrap();
+                        *lock = Some(std::time::Instant::now());
                     }
+                }
             }
         }
     }

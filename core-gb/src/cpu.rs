@@ -636,22 +636,34 @@ impl Cpu {
                 StepResult::new(8, false)
             }
             0x27 => {
-                // DAA
-                let a = self.registers.a;
-                let mut adjust = 0;
+                // DAA - Decimal Adjust Accumulator
+                // Corrects the result of a BCD addition or subtraction.
+                // After addition (N=0): adjusts digits >9 using H/C flags AND digit values.
+                // After subtraction (N=1): adjusts using ONLY the H and C flags.
+                let mut a = self.registers.a as u16;
+                let n_flag = self.registers.f & FLAG_N != 0;
                 let mut carry = self.registers.f & FLAG_C != 0;
-                if self.registers.f & FLAG_H != 0 || (a & 0x0F) > 9 {
-                    adjust |= 0x06;
-                }
-                if carry || a > 0x99 {
-                    adjust |= 0x60;
-                    carry = true;
-                }
-                let result = if self.registers.f & FLAG_N != 0 {
-                    a.wrapping_sub(adjust)
+
+                if n_flag {
+                    // After subtraction: only use flags to determine adjustment
+                    if carry {
+                        a = a.wrapping_sub(0x60);
+                    }
+                    if self.registers.f & FLAG_H != 0 {
+                        a = a.wrapping_sub(0x06);
+                    }
                 } else {
-                    a.wrapping_add(adjust)
-                };
+                    // After addition: use both flags and digit values
+                    if carry || a > 0x99 {
+                        a = a.wrapping_add(0x60);
+                        carry = true;
+                    }
+                    if self.registers.f & FLAG_H != 0 || (a & 0x0F) > 0x09 {
+                        a = a.wrapping_add(0x06);
+                    }
+                }
+
+                let result = a as u8;
                 self.registers.a = result;
                 self.set_flag(FLAG_Z, result == 0);
                 self.set_flag(FLAG_H, false);

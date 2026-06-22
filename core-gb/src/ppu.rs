@@ -154,6 +154,18 @@ impl Ppu {
     /// - Scanlines 144-153: VBlank period (456 cycles each)
     /// - Scanline 154: Frame complete, new frame begins
     pub fn step(&mut self, cycles: u32, bus: &mut Bus) -> bool {
+        let lcdc = bus.lcdc();
+        let lcd_enabled = (lcdc & 0x80) != 0;
+
+        if !lcd_enabled {
+            // When LCD is disabled, reset PPU state
+            self.cycle_counter = 0;
+            self.scanline = 0;
+            bus.set_ly(0);
+            bus.set_stat_ppu_bits(0, false); // Mode 0
+            return false;
+        }
+
         self.cycle_counter = self.cycle_counter.wrapping_add(cycles);
 
         // Constants for Game Boy timing
@@ -562,10 +574,14 @@ impl Ppu {
 
                     let sprite_behind_bg = if bus.is_cgb {
                         if (lcdc & 0x01) == 0 {
-                            true
+                            // LCDC bit 0 = 0: BG/Window master priority disabled
+                            // Sprites ALWAYS appear on top of BG
+                            false
                         } else if bg_has_priority {
+                            // BG map attribute has priority bit set
                             true
                         } else {
+                            // OAM attribute priority bit
                             priority
                         }
                     } else {

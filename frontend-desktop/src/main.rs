@@ -256,28 +256,31 @@ fn load_rom(path: PathBuf) -> Result<Box<GameBoy>, String> {
 fn read_buttons(window: &Window) -> u8 {
     let mut buttons = 0u8;
 
-    if window.is_key_pressed(Key::Z, minifb::KeyRepeat::Yes) {
+    // Use is_key_down for immediate raw key state.
+    // is_key_pressed uses OS key-repeat delay (~500ms initial),
+    // causing noticeable input lag in an emulator.
+    if window.is_key_down(Key::Z) {
         buttons |= BTN_A;
     }
-    if window.is_key_pressed(Key::X, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::X) {
         buttons |= BTN_B;
     }
-    if window.is_key_pressed(Key::Space, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Space) {
         buttons |= BTN_SELECT;
     }
-    if window.is_key_pressed(Key::Enter, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Enter) {
         buttons |= BTN_START;
     }
-    if window.is_key_pressed(Key::Right, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Right) {
         buttons |= BTN_RIGHT;
     }
-    if window.is_key_pressed(Key::Left, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Left) {
         buttons |= BTN_LEFT;
     }
-    if window.is_key_pressed(Key::Up, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Up) {
         buttons |= BTN_UP;
     }
-    if window.is_key_pressed(Key::Down, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Down) {
         buttons |= BTN_DOWN;
     }
 

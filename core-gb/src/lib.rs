@@ -82,11 +82,11 @@ pub use cpu::Registers;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GameBoy {
     /// The central processing unit that executes Game Boy instructions
-    cpu: Cpu,
+    pub cpu: Cpu,
     /// The memory bus that handles all memory access and I/O operations
-    bus: Bus,
+    pub bus: Bus,
     /// The picture processing unit that generates video output
-    ppu: Ppu,
+    pub ppu: Ppu,
     /// Total CPU cycles executed since emulator start (for performance tracking)
     cycles: u64,
 }

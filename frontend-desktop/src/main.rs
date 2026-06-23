@@ -12,7 +12,6 @@ use network::NetworkSettings;
 
 use core_gb::printer::{GbPrinter, PrinterImage};
 use std::sync::mpsc;
-use std::time::Duration;
 
 fn save_printer_image(img: &PrinterImage) -> Result<(), Box<dyn std::error::Error>> {
     let output_dir = std::path::Path::new("output");
@@ -92,9 +91,6 @@ fn main() {
     let (printer_tx, printer_rx) = mpsc::channel::<PrinterImage>();
     let mut printer_active = false;
     
-    if let Some(game) = &mut game_boy {
-        // Printer is not connected by default to prevent breaking games that probe the serial port
-    }
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         if window.is_key_pressed(Key::L, minifb::KeyRepeat::No) {

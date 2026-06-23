@@ -84,7 +84,6 @@
 
 use crate::bus::Bus;
 use crate::trace::{trace, trace_enabled};
-use crate::serde_array;
 use serde::{Deserialize, Serialize};
 
 /// Game Boy screen dimensions in pixels

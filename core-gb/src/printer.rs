@@ -1,5 +1,4 @@
 use core_common::LinkEndpoint;
-use serde::{Deserialize, Serialize};
 use std::io;
 use std::sync::mpsc::Sender;
 

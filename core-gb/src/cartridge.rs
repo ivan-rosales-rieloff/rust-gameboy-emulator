@@ -30,7 +30,7 @@
 //! ### MBC3 (Advanced)
 //! - **ROM Banking**: Up to 2MB ROM (128 banks of 16KB)
 //! - **RAM Banking**: Up to 32KB RAM (4 banks of 8KB)
-//! - **RTC Support**: Real-time clock (not implemented here)
+//! - **RTC Support**: Real-time clock (syncs with system time)
 //! - **Battery Backup**: Save game progress
 //!
 //! ## Memory Layout

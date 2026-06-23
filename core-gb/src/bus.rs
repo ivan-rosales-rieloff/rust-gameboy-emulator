@@ -358,7 +358,14 @@ impl Bus {
     ///   - Bits 0-3: Action buttons (A, B, Select, Start)
     ///   - Bits 4-7: Direction buttons (Right, Left, Up, Down)
     pub fn set_button_state(&mut self, buttons: u8) {
+        let old_p1 = self.read_joypad();
         self.button_state = buttons;
+        let new_p1 = self.read_joypad();
+
+        // Joypad interrupt is triggered on a falling edge (1 -> 0) of any of the lower 4 bits.
+        if (old_p1 & !new_p1) & 0x0F != 0 {
+            self.request_interrupt(0x10);
+        }
     }
 
     /// Connects a serial link endpoint to this bus.
@@ -561,7 +568,16 @@ impl Bus {
                 if trace_enabled() {
                     trace(&format!("P1 write: 0xFF00 <= 0x{value:02X}"));
                 }
-                self.io[0] = value;
+                let old_p1 = self.read_joypad();
+                // Only bits 4 and 5 are writable. Other bits are read-only or unused.
+                self.io[0] = (self.io[0] & 0xCF) | (value & 0x30);
+                let new_p1 = self.read_joypad();
+                
+                // Writing to P1 can select a button line that is already pressed, 
+                // causing a falling edge and triggering an interrupt.
+                if (old_p1 & !new_p1) & 0x0F != 0 {
+                    self.request_interrupt(0x10);
+                }
             }
 
             // Serial registers
@@ -858,6 +874,12 @@ impl Bus {
     fn tick_serial(&mut self, cycles: u32) {
         if !self.serial_transfer_in_progress {
             return;
+        }
+
+        // Only process internal clock (bit 0 of SC)
+        let internal_clock = self.serial_sc & 0x01 != 0;
+        if !internal_clock {
+            return; // External clock waits for external device
         }
 
         self.serial_clock = self.serial_clock.wrapping_add(cycles);

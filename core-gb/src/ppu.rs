@@ -102,12 +102,10 @@ pub const SCREEN_HEIGHT: usize = 144;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ppu {
     /// The final rendered image (160x144 pixels, 32-bit ARGB/XRGB color per pixel)
-    #[serde(with = "serde_array::u32_array")]
-    pub framebuffer: [u32; SCREEN_WIDTH * SCREEN_HEIGHT],
+    pub framebuffer: Vec<u32>,
 
     /// Metadata about background pixels (color index, priority) for sprite rendering
-    #[serde(with = "serde_array")]
-    pub bg_pixel_info: [u8; SCREEN_WIDTH * SCREEN_HEIGHT],
+    pub bg_pixel_info: Vec<u8>,
 
     /// Cycle counter for timing scanline progression
     cycle_counter: u32,
@@ -125,8 +123,8 @@ impl Default for Ppu {
     /// Creates a PPU in default state (LCD off, blank screen)
     fn default() -> Self {
         Self {
-            framebuffer: [0xFFFFFFFF; SCREEN_WIDTH * SCREEN_HEIGHT], // Initialize to white
-            bg_pixel_info: [0; SCREEN_WIDTH * SCREEN_HEIGHT],
+            framebuffer: vec![0xFFFFFFFF; SCREEN_WIDTH * SCREEN_HEIGHT], // Initialize to white
+            bg_pixel_info: vec![0; SCREEN_WIDTH * SCREEN_HEIGHT],
             cycle_counter: 0,
             scanline: 0,
             frame_counter: 0,
@@ -177,6 +175,12 @@ impl Ppu {
         // Process complete scanlines
         while self.cycle_counter >= SCANLINE_CYCLES {
             self.cycle_counter -= SCANLINE_CYCLES;
+
+            // Render current scanline before moving to the next
+            if self.scanline < 144 {
+                self.render_scanline(bus, self.scanline as usize);
+            }
+
             self.scanline = self.scanline.wrapping_add(1);
 
             // Tick HDMA once per completed scanline.
@@ -198,8 +202,6 @@ impl Ppu {
                 self.scanline = 0;
                 self.frame_counter = self.frame_counter.wrapping_add(1);
 
-                // Render the complete frame
-                self.render_frame(bus);
                 frame_completed = true;
 
                 // Debug tracing for frame completion
@@ -288,7 +290,7 @@ impl Ppu {
     /// Returns a reference to the current framebuffer.
     ///
     /// The framebuffer contains the rendered image as 32-bit colors.
-    pub fn framebuffer(&self) -> &[u32; SCREEN_WIDTH * SCREEN_HEIGHT] {
+    pub fn framebuffer(&self) -> &[u32] {
         &self.framebuffer
     }
 
@@ -298,121 +300,198 @@ impl Ppu {
     /// completely redraws the 160x144 pixel framebuffer.
     ///
     /// # Rendering Order
-    /// 1. Background tiles (if enabled)
-    /// 2. Window tiles (if enabled)
-    /// 3. Sprites (if enabled, with priority handling)
-    fn render_frame(&mut self, bus: &Bus) {
-        // Read LCD control register to determine what to render
+    fn render_scanline(&mut self, bus: &Bus, y: usize) {
         let lcdc = bus.read8(0xFF40);
         let is_cgb = bus.is_cgb;
         
-        // GBC background display is always enabled for priority purposes even if bit 0 is 0
         let bg_enabled = (lcdc & 0x01) != 0 || is_cgb;
 
-        // If background is disabled, clear screen to white (color 0)
         if !bg_enabled {
-            self.framebuffer.fill(0x00FFFFFF);
-            self.bg_pixel_info.fill(0);
+            let start_idx = y * SCREEN_WIDTH;
+            let end_idx = start_idx + SCREEN_WIDTH;
+            self.framebuffer[start_idx..end_idx].fill(0x00FFFFFF);
+            self.bg_pixel_info[start_idx..end_idx].fill(0);
             return;
         }
 
-        // Read rendering parameters from I/O registers
-        let scroll_y = bus.read8(0xFF42) as usize; // Background scroll Y
-        let scroll_x = bus.read8(0xFF43) as usize; // Background scroll X
-        let palette = bus.read8(0xFF47); // Background palette
+        let scroll_y = bus.read8(0xFF42) as usize;
+        let scroll_x = bus.read8(0xFF43) as usize;
+        let palette = bus.read8(0xFF47);
 
-        // Determine tile map base address (0x9800 or 0x9C00)
         let bg_map_base = if lcdc & 0x08 != 0 { 0x9C00 } else { 0x9800 };
 
-        // Determine Window parameters
-        let wy = bus.read8(0xFF4A) as usize; // Window Y
-        let wx = bus.read8(0xFF4B) as usize; // Window X
-        let win_enabled = (lcdc & 0x20) != 0; // Bit 5: Window enable
-        let win_map_base = if lcdc & 0x40 != 0 { 0x9C00 } else { 0x9800 }; // Bit 6: Window map base
+        let wy = bus.read8(0xFF4A) as usize;
+        let wx = bus.read8(0xFF4B) as usize;
+        let win_enabled = (lcdc & 0x20) != 0;
+        let win_map_base = if lcdc & 0x40 != 0 { 0x9C00 } else { 0x9800 };
         let win_x_start = (wx as i32) - 7;
 
-        // Determine tile data addressing mode
         let tile_data_signed = lcdc & 0x10 == 0;
 
-        // Render background and window pixel by pixel
-        for y in 0..SCREEN_HEIGHT {
-            for x in 0..SCREEN_WIDTH {
-                // Determine if we should render the window or background pixel
-                let in_window =
-                    win_enabled && wy < SCREEN_HEIGHT && y >= wy && (x as i32) >= win_x_start;
+        for x in 0..SCREEN_WIDTH {
+            let in_window = win_enabled && wy < SCREEN_HEIGHT && y >= wy && (x as i32) >= win_x_start;
 
-                let (map_y, mut tile_line, map_x, mut tile_col, map_base) = if in_window {
-                    let window_x = (x as i32 - win_x_start) as usize;
-                    let window_y = y - wy;
-                    (
-                        window_y / 8,
-                        (window_y % 8) as u16,
-                        window_x / 8,
-                        (window_x % 8) as u16,
-                        win_map_base,
-                    )
-                } else {
-                    (
-                        ((y + scroll_y) & 0xFF) / 8,
-                        ((y + scroll_y) & 0x07) as u16,
-                        ((x + scroll_x) & 0xFF) / 8,
-                        ((x + scroll_x) & 0x07) as u16,
-                        bg_map_base,
-                    )
-                };
+            let (map_y, mut tile_line, map_x, mut tile_col, map_base) = if in_window {
+                let window_x = (x as i32 - win_x_start) as usize;
+                let window_y = y - wy;
+                (
+                    window_y / 8,
+                    (window_y % 8) as u16,
+                    window_x / 8,
+                    (window_x % 8) as u16,
+                    win_map_base,
+                )
+            } else {
+                (
+                    ((y + scroll_y) & 0xFF) / 8,
+                    ((y + scroll_y) & 0x07) as u16,
+                    ((x + scroll_x) & 0xFF) / 8,
+                    ((x + scroll_x) & 0x07) as u16,
+                    bg_map_base,
+                )
+            };
 
-                // Get tile index from the appropriate map in Bank 0
-                let tile_index_addr = map_base + (map_y * 32 + map_x) as u16;
-                let tile_offset = tile_index_addr - 0x8000;
-                let tile_index = bus.read_vram_bank(0, tile_offset);
+            let tile_index_addr = map_base + (map_y * 32 + map_x) as u16;
+            let tile_offset = tile_index_addr - 0x8000;
+            let tile_index = bus.read_vram_bank(0, tile_offset);
 
-                // GBC background attributes
-                let (palette_num, vram_bank, x_flip, y_flip, priority) = if bus.is_cgb {
-                    let attr = bus.read_vram_bank(1, tile_offset);
-                    (
-                        attr & 0x07,
-                        (attr >> 3) & 0x01,
-                        (attr & 0x20) != 0,
-                        (attr & 0x40) != 0,
-                        (attr & 0x80) != 0,
-                    )
-                } else {
-                    (0, 0, false, false, false)
-                };
+            let (palette_num, vram_bank, x_flip, y_flip, priority) = if bus.is_cgb {
+                let attr = bus.read_vram_bank(1, tile_offset);
+                (
+                    attr & 0x07,
+                    (attr >> 3) & 0x01,
+                    (attr & 0x20) != 0,
+                    (attr & 0x40) != 0,
+                    (attr & 0x80) != 0,
+                )
+            } else {
+                (0, 0, false, false, false)
+            };
 
-                // Apply flipping
-                if y_flip {
-                    tile_line = 7 - tile_line;
+            if y_flip {
+                tile_line = 7 - tile_line;
+            }
+            if x_flip {
+                tile_col = 7 - tile_col;
+            }
+
+            let tile_addr = if tile_data_signed {
+                let signed_index = tile_index as i8 as i16;
+                0x9000u16.wrapping_add((signed_index * 16) as u16)
+            } else {
+                0x8000u16 + u16::from(tile_index) * 16
+            };
+
+            let line_offset = tile_addr.wrapping_add(tile_line * 2) - 0x8000;
+            let b1 = bus.read_vram_bank(vram_bank, line_offset);
+            let b2 = bus.read_vram_bank(vram_bank, line_offset + 1);
+
+            let bit = 7 - tile_col;
+            let color_index = ((b2 >> bit) & 1) << 1 | ((b1 >> bit) & 1);
+
+            let pixel_idx = y * SCREEN_WIDTH + x;
+            let final_color = if bus.is_cgb {
+                let pal_offset = usize::from(palette_num) * 8 + usize::from(color_index) * 2;
+                let low = bus.bg_palette_ram[pal_offset];
+                let high = bus.bg_palette_ram[pal_offset + 1];
+                let rgb555 = u16::from(high) << 8 | u16::from(low);
+                
+                let r = (rgb555 & 0x1F) as u32;
+                let g = ((rgb555 >> 5) & 0x1F) as u32;
+                let b = ((rgb555 >> 10) & 0x1F) as u32;
+                
+                let r8 = (r << 3) | (r >> 2);
+                let g8 = (g << 3) | (g >> 2);
+                let b8 = (b << 3) | (b >> 2);
+                
+                (r8 << 16) | (g8 << 8) | b8
+            } else {
+                let shade = (palette >> (color_index * 2)) & 0x03;
+                match shade {
+                    0 => 0x00FFFFFF,
+                    1 => 0x00AAAAAA,
+                    2 => 0x00555555,
+                    _ => 0x00000000,
                 }
-                if x_flip {
-                    tile_col = 7 - tile_col;
+            };
+
+            self.bg_pixel_info[pixel_idx] = color_index | (if priority { 0x80 } else { 0x00 });
+            self.framebuffer[pixel_idx] = final_color;
+        }
+
+        self.render_sprites_for_scanline(bus, lcdc, y);
+    }
+
+    fn render_sprites_for_scanline(&mut self, bus: &Bus, lcdc: u8, y: usize) {
+        let sprites_enabled = lcdc & 0x02 != 0;
+        if !sprites_enabled {
+            return;
+        }
+
+        let sprite_height = if lcdc & 0x04 != 0 { 16 } else { 8 };
+        let oam_base = 0xFE00u16;
+        let palette0 = bus.read8(0xFF48);
+        let palette1 = bus.read8(0xFF49);
+
+        // Process all 40 sprites in OAM in reverse order so lower index has priority
+        for sprite_idx in (0..40).rev() {
+            let oam_offset = (sprite_idx * 4) as u16;
+
+            let sprite_y = bus.read8(oam_base + oam_offset) as i16 - 16;
+            
+            // Check if this sprite intersects the current scanline
+            if (y as i16) < sprite_y || (y as i16) >= sprite_y + sprite_height {
+                continue;
+            }
+
+            let sprite_x = bus.read8(oam_base + oam_offset + 1) as i16 - 8;
+            let tile_number = bus.read8(oam_base + oam_offset + 2);
+            let attributes = bus.read8(oam_base + oam_offset + 3);
+
+            let priority = attributes & 0x80 != 0;
+            let y_flip = attributes & 0x40 != 0;
+            let x_flip = attributes & 0x20 != 0;
+            
+            let (palette_num, vram_bank) = if bus.is_cgb {
+                (attributes & 0x07, (attributes >> 3) & 0x01)
+            } else {
+                (if attributes & 0x10 != 0 { 1 } else { 0 }, 0)
+            };
+
+            let sy = y as i16 - sprite_y;
+            let tile_y = if y_flip {
+                (sprite_height - 1 - sy) as u16
+            } else {
+                sy as u16
+            };
+
+            let tile_addr = if sprite_height == 16 {
+                0x8000u16 + u16::from(tile_number & 0xFE) * 16 + tile_y * 2
+            } else {
+                0x8000u16 + u16::from(tile_number) * 16 + tile_y * 2
+            };
+
+            let offset = tile_addr - 0x8000;
+            let b1 = bus.read_vram_bank(vram_bank, offset);
+            let b2 = bus.read_vram_bank(vram_bank, offset + 1);
+
+            for sx in 0..8 {
+                let screen_x = sprite_x + sx as i16;
+                if screen_x < 0 || screen_x >= SCREEN_WIDTH as i16 {
+                    continue;
                 }
 
-                // Calculate tile data address based on addressing mode
-                let tile_addr = if tile_data_signed {
-                    // Signed mode: tile_index is signed offset from 0x9000
-                    let signed_index = tile_index as i8 as i16;
-                    0x9000u16.wrapping_add((signed_index * 16) as u16)
-                } else {
-                    // Unsigned mode: tile_index is direct offset from 0x8000
-                    0x8000u16 + u16::from(tile_index) * 16
-                };
-
-                // Get the two bytes for this pixel row (8 pixels, 2 bits each) from the selected VRAM bank
-                let line_offset = tile_addr.wrapping_add(tile_line * 2) - 0x8000;
-                let b1 = bus.read_vram_bank(vram_bank, line_offset); // Low bit plane
-                let b2 = bus.read_vram_bank(vram_bank, line_offset + 1); // High bit plane
-
-                // Extract color index for this pixel (2 bits)
-                let bit = 7 - tile_col; // MSB first (bit 7 = leftmost pixel)
+                let bit = if x_flip { sx } else { 7 - sx };
                 let color_index = ((b2 >> bit) & 1) << 1 | ((b1 >> bit) & 1);
 
-                // Map index to final color
-                let pixel_idx = y * SCREEN_WIDTH + x;
+                if color_index == 0 {
+                    continue;
+                }
+
                 let final_color = if bus.is_cgb {
                     let pal_offset = usize::from(palette_num) * 8 + usize::from(color_index) * 2;
-                    let low = bus.bg_palette_ram[pal_offset];
-                    let high = bus.bg_palette_ram[pal_offset + 1];
+                    let low = bus.sp_palette_ram[pal_offset];
+                    let high = bus.sp_palette_ram[pal_offset + 1];
                     let rgb555 = u16::from(high) << 8 | u16::from(low);
                     
                     let r = (rgb555 & 0x1F) as u32;
@@ -425,7 +504,8 @@ impl Ppu {
                     
                     (r8 << 16) | (g8 << 8) | b8
                 } else {
-                    let shade = (palette >> (color_index * 2)) & 0x03;
+                    let palette_reg = if palette_num == 1 { palette1 } else { palette0 };
+                    let shade = (palette_reg >> (color_index * 2)) & 0x03;
                     match shade {
                         0 => 0x00FFFFFF,
                         1 => 0x00AAAAAA,
@@ -434,169 +514,28 @@ impl Ppu {
                     }
                 };
 
-                // Store background metadata for sprite priority check
-                self.bg_pixel_info[pixel_idx] = color_index | (if priority { 0x80 } else { 0x00 });
-                self.framebuffer[pixel_idx] = final_color;
-            }
-        }
+                let pixel_idx = y * SCREEN_WIDTH + (screen_x as usize);
 
-        // Render sprites on top of background
-        self.render_sprites(bus, lcdc);
-    }
+                let bg_info = self.bg_pixel_info[pixel_idx];
+                let bg_color_idx = bg_info & 0x03;
+                let bg_has_priority = (bg_info & 0x80) != 0;
 
-    /// Renders all sprites (OAM objects) for the current frame.
-    ///
-    /// Sprites are rendered after the background and can appear in front of
-    /// or behind background pixels based on their priority attribute.
-    ///
-    /// # Sprite Processing
-    /// - Up to 40 sprites total, max 10 per scanline
-    /// - 8x8 or 8x16 pixels depending on LCDC bit 2
-    /// - Color 0 is transparent
-    /// - Priority determines layering with background
-    fn render_sprites(&mut self, bus: &Bus, lcdc: u8) {
-        let sprites_enabled = lcdc & 0x02 != 0; // Bit 1: Sprite enable
-        if !sprites_enabled {
-            return;
-        }
-
-        // Determine sprite height from LCDC bit 2
-        let sprite_height = if lcdc & 0x04 != 0 { 16 } else { 8 };
-
-        // OAM base address and sprite palettes (for DMG mode)
-        let oam_base = 0xFE00u16;
-        let palette0 = bus.read8(0xFF48); // Object palette 0
-        let palette1 = bus.read8(0xFF49); // Object palette 1
-
-        // Process all 40 sprites in OAM in reverse order so lower index has priority
-        for sprite_idx in (0..40).rev() {
-            let oam_offset = (sprite_idx * 4) as u16;
-
-            // Read sprite attributes from OAM
-            let sprite_y = bus.read8(oam_base + oam_offset) as i16 - 16; // Y position (top)
-            let sprite_x = bus.read8(oam_base + oam_offset + 1) as i16 - 8; // X position (left)
-            let tile_number = bus.read8(oam_base + oam_offset + 2); // Tile index
-            let attributes = bus.read8(oam_base + oam_offset + 3); // Attributes
-
-            // Parse sprite attributes
-            let priority = attributes & 0x80 != 0; // Bit 7: Priority (0=above BG, 1=behind BG)
-            let y_flip = attributes & 0x40 != 0; // Bit 6: Vertical flip
-            let x_flip = attributes & 0x20 != 0; // Bit 5: Horizontal flip
-            
-            // GBC specific vs DMG specific attributes
-            let (palette_num, vram_bank) = if bus.is_cgb {
-                (attributes & 0x07, (attributes >> 3) & 0x01)
-            } else {
-                (if attributes & 0x10 != 0 { 1 } else { 0 }, 0)
-            };
-
-            // Render each pixel row of the sprite
-            for sy in 0..sprite_height {
-                // Calculate screen Y position
-                let screen_y = sprite_y + sy as i16;
-                if screen_y < 0 || screen_y >= SCREEN_HEIGHT as i16 {
-                    continue; // Sprite row is off-screen
-                }
-
-                // Handle vertical flipping
-                let tile_y = if y_flip {
-                    (sprite_height - 1 - sy) as u16
+                let sprite_behind_bg = if bus.is_cgb {
+                    if (lcdc & 0x01) == 0 {
+                        false
+                    } else if bg_has_priority {
+                        true
+                    } else if priority {
+                        bg_color_idx != 0
+                    } else {
+                        false
+                    }
                 } else {
-                    sy as u16
+                    priority && bg_color_idx != 0
                 };
 
-                // Calculate tile data address
-                let tile_addr = if sprite_height == 16 {
-                    // 8x16 sprites use two tiles (even/odd based on bit 0)
-                    0x8000u16 + u16::from(tile_number & 0xFE) * 16 + tile_y * 2
-                } else {
-                    // 8x8 sprites use single tile
-                    0x8000u16 + u16::from(tile_number) * 16 + tile_y * 2
-                };
-
-                // Read tile data for this row from the appropriate VRAM bank
-                let offset = tile_addr - 0x8000;
-                let b1 = bus.read_vram_bank(vram_bank, offset);
-                let b2 = bus.read_vram_bank(vram_bank, offset + 1);
-
-                // Render each pixel in the row
-                for sx in 0..8 {
-                    // Calculate screen X position
-                    let screen_x = sprite_x + sx as i16;
-                    if screen_x < 0 || screen_x >= SCREEN_WIDTH as i16 {
-                        continue; // Sprite pixel is off-screen
-                    }
-
-                    // Handle horizontal flipping
-                    let bit = if x_flip { sx } else { 7 - sx };
-
-                    // Extract color index (2 bits per pixel)
-                    let color_index = ((b2 >> bit) & 1) << 1 | ((b1 >> bit) & 1);
-
-                    // Color 0 is transparent for sprites
-                    if color_index == 0 {
-                        continue;
-                    }
-
-                    // Map color index to final 32-bit color
-                    let final_color = if bus.is_cgb {
-                        let pal_offset = usize::from(palette_num) * 8 + usize::from(color_index) * 2;
-                        let low = bus.sp_palette_ram[pal_offset];
-                        let high = bus.sp_palette_ram[pal_offset + 1];
-                        let rgb555 = u16::from(high) << 8 | u16::from(low);
-                        
-                        let r = (rgb555 & 0x1F) as u32;
-                        let g = ((rgb555 >> 5) & 0x1F) as u32;
-                        let b = ((rgb555 >> 10) & 0x1F) as u32;
-                        
-                        let r8 = (r << 3) | (r >> 2);
-                        let g8 = (g << 3) | (g >> 2);
-                        let b8 = (b << 3) | (b >> 2);
-                        
-                        (r8 << 16) | (g8 << 8) | b8
-                    } else {
-                        let palette_reg = if palette_num == 1 { palette1 } else { palette0 };
-                        let shade = (palette_reg >> (color_index * 2)) & 0x03;
-                        match shade {
-                            0 => 0x00FFFFFF,
-                            1 => 0x00AAAAAA,
-                            2 => 0x00555555,
-                            _ => 0x00000000,
-                        }
-                    };
-
-                    let pixel_idx = (screen_y as usize) * SCREEN_WIDTH + (screen_x as usize);
-
-                    // Handle sprite priority
-                    let bg_info = self.bg_pixel_info[pixel_idx];
-                    let bg_color_idx = bg_info & 0x03;
-                    let bg_has_priority = (bg_info & 0x80) != 0;
-
-                    let sprite_behind_bg = if bus.is_cgb {
-                        if (lcdc & 0x01) == 0 {
-                            // LCDC bit 0 = 0: BG/Window master priority disabled
-                            // Sprites ALWAYS appear on top of BG
-                            false
-                        } else if bg_has_priority {
-                            // BG map attribute has priority bit set
-                            true
-                        } else {
-                            // OAM attribute priority bit
-                            priority
-                        }
-                    } else {
-                        priority
-                    };
-
-                    let draw = if bg_color_idx == 0 {
-                        true // BG color 0 is always transparent to sprites
-                    } else {
-                        !sprite_behind_bg
-                    };
-
-                    if draw {
-                        self.framebuffer[pixel_idx] = final_color;
-                    }
+                if !sprite_behind_bg {
+                    self.framebuffer[pixel_idx] = final_color;
                 }
             }
         }

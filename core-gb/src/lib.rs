@@ -46,6 +46,7 @@ mod apu;
 mod bus;
 mod cartridge;
 mod cpu;
+pub mod printer;
 mod ppu;
 mod serde_array;
 mod trace;
@@ -233,6 +234,7 @@ impl GameBoy {
     /// The function alternates between CPU and PPU steps until the PPU
     /// signals that a frame is complete (scanline 144 reached).
     pub fn run_frame(&mut self) -> Result<(), GameBoyError> {
+        let mut frame_cycles = 0;
         loop {
             // Execute one CPU instruction
             let step_result = self.step()?;
@@ -244,11 +246,22 @@ impl GameBoy {
             } else {
                 step_result.cycles
             };
+            
+            frame_cycles += ppu_cycles;
 
             // Advance PPU by the same number of cycles
             // Returns true when a frame is complete
             if self.ppu.step(ppu_cycles, &mut self.bus) {
                 // Check if cartridge needs to persist debounced RAM save
+                self.bus.cartridge_mut().update_save_debouncer();
+                return Ok(());
+            }
+            
+            // Fallback: If the game disables the LCD or keeps resetting it before a full
+            // frame can be rendered, we would loop forever. Return after a normal frame's 
+            // worth of cycles if the LCD is disabled to prevent the emulator from hanging.
+            let lcd_enabled = (self.bus.lcdc() & 0x80) != 0;
+            if !lcd_enabled && frame_cycles >= 70224 {
                 self.bus.cartridge_mut().update_save_debouncer();
                 return Ok(());
             }

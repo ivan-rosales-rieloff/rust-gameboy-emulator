@@ -264,14 +264,40 @@ fun EmulatorScreen() {
                             )
                         }
                     }
-                    Button(
-                        onClick = { romPickerLauncher.launch(arrayOf("*/*")) },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00ADB5)),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                        modifier = Modifier.height(28.dp),
-                        shape = RoundedCornerShape(4.dp)
-                    ) {
-                        Text("LOAD ROM", fontSize = 10.sp, color = Color.White)
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (isRomLoaded) {
+                            Button(
+                                onClick = {
+                                    currentUri?.let { uri ->
+                                        try {
+                                            context.contentResolver.openInputStream(uri)?.use { stream ->
+                                                val bytes = stream.readBytes()
+                                                EmulatorBridge.init(bytes, context.filesDir.absolutePath)
+                                                statusMessage = "Game Reset!"
+                                            }
+                                        } catch (e: Exception) {
+                                            statusMessage = "Reset failed"
+                                        }
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD65A31)),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                modifier = Modifier.height(28.dp),
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text("RESET", fontSize = 10.sp, color = Color.White)
+                            }
+                        }
+
+                        Button(
+                            onClick = { romPickerLauncher.launch(arrayOf("*/*")) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00ADB5)),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                            modifier = Modifier.height(28.dp),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text("LOAD ROM", fontSize = 10.sp, color = Color.White)
+                        }
                     }
                 }
 
@@ -376,29 +402,7 @@ fun EmulatorScreen() {
                         onPress = { isPressed -> updateInput(BTN_START, isPressed) }
                     )
 
-                    if (isRomLoaded) {
-                        Button(
-                            onClick = {
-                                currentUri?.let { uri ->
-                                    try {
-                                        context.contentResolver.openInputStream(uri)?.use { stream ->
-                                            val bytes = stream.readBytes()
-                                            EmulatorBridge.init(bytes, context.filesDir.absolutePath)
-                                            statusMessage = "Game Reset!"
-                                        }
-                                    } catch (e: Exception) {
-                                        statusMessage = "Reset failed"
-                                    }
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD65A31)),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                            modifier = Modifier.height(26.dp),
-                            shape = RoundedCornerShape(4.dp)
-                        ) {
-                            Text("RESET", fontSize = 10.sp, color = Color.White)
-                        }
-                    }
+
                 }
             }
 
@@ -466,11 +470,34 @@ fun EmulatorScreen() {
                     }
                 }
 
-                Button(
-                    onClick = { romPickerLauncher.launch(arrayOf("*/*")) },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00ADB5))
-                ) {
-                    Text(text = "Load ROM", color = Color.White)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (isRomLoaded) {
+                        Button(
+                            onClick = {
+                                currentUri?.let { uri ->
+                                    try {
+                                        context.contentResolver.openInputStream(uri)?.use { stream ->
+                                            val bytes = stream.readBytes()
+                                            EmulatorBridge.init(bytes, context.filesDir.absolutePath)
+                                            statusMessage = "Game Reset!"
+                                        }
+                                    } catch (e: Exception) {
+                                        statusMessage = "Reset failed"
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD65A31))
+                        ) {
+                            Text("Reset", color = Color.White)
+                        }
+                    }
+
+                    Button(
+                        onClick = { romPickerLauncher.launch(arrayOf("*/*")) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00ADB5))
+                    ) {
+                        Text(text = "Load ROM", color = Color.White)
+                    }
                 }
             }
 
@@ -530,27 +557,6 @@ fun EmulatorScreen() {
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
-                    Button(
-                        onClick = {
-                            currentUri?.let { uri ->
-                                try {
-                                    context.contentResolver.openInputStream(uri)?.use { stream ->
-                                        val bytes = stream.readBytes()
-                                        EmulatorBridge.init(bytes, context.filesDir.absolutePath)
-                                        statusMessage = "Game Reset!"
-                                    }
-                                } catch (e: Exception) {
-                                    statusMessage = "Reset failed"
-                                }
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD65A31)),
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp)
-                    ) {
-                        Text("Reset", color = Color.White, fontSize = 12.sp)
-                    }
-
                     Button(
                         onClick = {
                             val safeTitle = romTitle.filter { it.isLetterOrDigit() }

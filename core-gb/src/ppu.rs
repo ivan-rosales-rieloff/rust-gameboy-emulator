@@ -309,7 +309,7 @@ impl Ppu {
         if !bg_enabled {
             let start_idx = y * SCREEN_WIDTH;
             let end_idx = start_idx + SCREEN_WIDTH;
-            self.framebuffer[start_idx..end_idx].fill(0x00FFFFFF);
+            self.framebuffer[start_idx..end_idx].fill(0xFFFFFFFF);
             self.bg_pixel_info[start_idx..end_idx].fill(0);
             return;
         }
@@ -404,14 +404,14 @@ impl Ppu {
                 let g8 = (g << 3) | (g >> 2);
                 let b8 = (b << 3) | (b >> 2);
                 
-                (r8 << 16) | (g8 << 8) | b8
+                0xFF000000 | (r8 << 16) | (g8 << 8) | b8
             } else {
                 let shade = (palette >> (color_index * 2)) & 0x03;
                 match shade {
-                    0 => 0x00FFFFFF,
-                    1 => 0x00AAAAAA,
-                    2 => 0x00555555,
-                    _ => 0x00000000,
+                    0 => 0xFFFFFFFF,
+                    1 => 0xFFAAAAAA,
+                    2 => 0xFF555555,
+                    _ => 0xFF000000,
                 }
             };
 
@@ -502,15 +502,15 @@ impl Ppu {
                     let g8 = (g << 3) | (g >> 2);
                     let b8 = (b << 3) | (b >> 2);
                     
-                    (r8 << 16) | (g8 << 8) | b8
+                    0xFF000000 | (r8 << 16) | (g8 << 8) | b8
                 } else {
                     let palette_reg = if palette_num == 1 { palette1 } else { palette0 };
                     let shade = (palette_reg >> (color_index * 2)) & 0x03;
                     match shade {
-                        0 => 0x00FFFFFF,
-                        1 => 0x00AAAAAA,
-                        2 => 0x00555555,
-                        _ => 0x00000000,
+                        0 => 0xFFFFFFFF,
+                        1 => 0xFFAAAAAA,
+                        2 => 0xFF555555,
+                        _ => 0xFF000000,
                     }
                 };
 

@@ -9,3 +9,4 @@ core-common = { path = "../core-common" }
 minifb = "0.27"
 rfd = "0.12"
 rodio = "0.17"
+image = "0.24"

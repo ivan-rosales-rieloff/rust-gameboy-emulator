@@ -46,6 +46,7 @@ mod apu;
 mod bus;
 mod cartridge;
 mod cpu;
+pub mod printer;
 mod ppu;
 mod serde_array;
 mod trace;
@@ -82,11 +83,11 @@ pub use cpu::Registers;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GameBoy {
     /// The central processing unit that executes Game Boy instructions
-    cpu: Cpu,
+    pub cpu: Cpu,
     /// The memory bus that handles all memory access and I/O operations
-    bus: Bus,
+    pub bus: Bus,
     /// The picture processing unit that generates video output
-    ppu: Ppu,
+    pub ppu: Ppu,
     /// Total CPU cycles executed since emulator start (for performance tracking)
     cycles: u64,
 }
@@ -150,12 +151,17 @@ impl GameBoy {
     pub fn from_rom_bytes(rom: Vec<u8>) -> Result<Self, GameBoyError> {
         // Parse the ROM into a cartridge (handles MBC detection, header validation)
         let cartridge = Cartridge::from_rom(rom)?;
+        let bus = Bus::new(cartridge);
+        let mut cpu = Cpu::default();
+        if bus.is_cgb {
+            cpu.init_cgb_registers();
+        }
 
         Ok(Self {
             // CPU starts with default register values (PC=0x0100, SP=0xFFFE, etc.)
-            cpu: Cpu::default(),
+            cpu,
             // Bus connects all components and handles memory mapping
-            bus: Bus::new(cartridge),
+            bus,
             // PPU starts in default state (LCD off, blank screen)
             ppu: Ppu::default(),
             // Cycle counter for performance statistics
@@ -208,7 +214,7 @@ impl GameBoy {
     /// The framebuffer contains the raw pixel data for the current frame.
     /// Each pixel is represented as a single byte (palette index 0-3).
     /// The array is SCREEN_WIDTH * SCREEN_HEIGHT bytes.
-    pub fn framebuffer(&self) -> &[u8] {
+    pub fn framebuffer(&self) -> &[u32] {
         self.ppu.framebuffer()
     }
 
@@ -228,14 +234,34 @@ impl GameBoy {
     /// The function alternates between CPU and PPU steps until the PPU
     /// signals that a frame is complete (scanline 144 reached).
     pub fn run_frame(&mut self) -> Result<(), GameBoyError> {
+        let mut frame_cycles = 0;
         loop {
             // Execute one CPU instruction
             let step_result = self.step()?;
 
+            // In GBC double speed mode, CPU cycles run twice as fast,
+            // so the PPU receives half the cycles relative to instruction execution.
+            let ppu_cycles = if self.bus.double_speed_active() {
+                step_result.cycles / 2
+            } else {
+                step_result.cycles
+            };
+            
+            frame_cycles += ppu_cycles;
+
             // Advance PPU by the same number of cycles
             // Returns true when a frame is complete
-            if self.ppu.step(step_result.cycles, &mut self.bus) {
+            if self.ppu.step(ppu_cycles, &mut self.bus) {
                 // Check if cartridge needs to persist debounced RAM save
+                self.bus.cartridge_mut().update_save_debouncer();
+                return Ok(());
+            }
+            
+            // Fallback: If the game disables the LCD or keeps resetting it before a full
+            // frame can be rendered, we would loop forever. Return after a normal frame's 
+            // worth of cycles if the LCD is disabled to prevent the emulator from hanging.
+            let lcd_enabled = (self.bus.lcdc() & 0x80) != 0;
+            if !lcd_enabled && frame_cycles >= 70224 {
                 self.bus.cartridge_mut().update_save_debouncer();
                 return Ok(());
             }
@@ -389,9 +415,17 @@ impl HeadlessCore for GameBoy {
         // Track total cycles for performance monitoring
         self.cycles += u64::from(step_result.cycles);
 
+        // In GBC double speed mode, CPU cycles run twice as fast,
+        // so peripheral devices (timer, APU) receive half the cycles.
+        let peripheral_cycles = if self.bus.double_speed_active() {
+            step_result.cycles / 2
+        } else {
+            step_result.cycles
+        };
+
         // Tick hardware timer and APU
-        self.bus.tick_timer(step_result.cycles);
-        self.bus.apu.tick(step_result.cycles);
+        self.bus.tick_timer(peripheral_cycles);
+        self.bus.apu.tick(peripheral_cycles);
 
         Ok(step_result)
     }
@@ -456,10 +490,10 @@ mod test_serialization {
 
     #[test]
     fn serialize_and_deserialize_ppu() {
-        let ppu = Ppu::default();
-        let encoded = bincode::serde::encode_to_vec(&ppu, bincode::config::standard()).expect("encode ppu");
-        let (_decoded, _) = bincode::serde::decode_from_slice::<Ppu, _>(&encoded, bincode::config::standard()).expect("decode ppu");
-        drop(_decoded);
+        let ppu = Box::new(Ppu::default());
+        let encoded = bincode::serde::encode_to_vec(&*ppu, bincode::config::standard()).expect("encode ppu");
+        let (decoded, _) = bincode::serde::decode_from_slice::<Box<Ppu>, _>(&encoded, bincode::config::standard()).expect("decode ppu");
+        drop(decoded);
     }
 
     #[test]
@@ -482,10 +516,10 @@ mod test_serialization {
     fn serialize_and_deserialize_bus() {
         let rom = vec![0u8; 0x8000];
         let cartridge = crate::cartridge::Cartridge::from_rom(rom).expect("create cartridge");
-        let bus = Bus::new(cartridge);
-        let encoded = bincode::serde::encode_to_vec(&bus, bincode::config::standard()).expect("encode bus");
-        let (_decoded, _) = bincode::serde::decode_from_slice::<Bus, _>(&encoded, bincode::config::standard()).expect("decode bus");
-        drop(_decoded);
+        let bus = Box::new(Bus::new(cartridge));
+        let encoded = bincode::serde::encode_to_vec(&*bus, bincode::config::standard()).expect("encode bus");
+        let (decoded, _) = bincode::serde::decode_from_slice::<Box<Bus>, _>(&encoded, bincode::config::standard()).expect("decode bus");
+        drop(decoded);
     }
 
 
@@ -569,12 +603,12 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_cartridge_type() {
-        let rom = make_rom(&[0x00], 0x10, "BADTYPE");
+        let rom = make_rom(&[0x00], 0x22, "BADTYPE");
         let error = GameBoy::from_rom_bytes(rom).unwrap_err();
 
         match error {
             GameBoyError::Cartridge(CartridgeError::UnsupportedCartridgeType(value)) => {
-                assert_eq!(value, 0x10);
+                assert_eq!(value, 0x22);
             }
             _ => panic!("expected unsupported cartridge type error"),
         }
@@ -813,4 +847,93 @@ mod tests {
         assert_eq!(game_boy.registers().f & 0x10, 0x10); // carry flag set
         assert_eq!(game_boy.registers().f & 0x80, 0x00); // zero flag NOT set
     }
+
+    #[test]
+    fn supports_mbc5_rom_bank_switching() {
+        let mut rom = make_rom(&[
+            0x3E, 0x02,         // LD A,$02
+            0xEA, 0x00, 0x20,   // LD ($2000),A -> Set lower 8 bits of ROM bank to 2
+            0xFA, 0x00, 0x40,   // LD A,($4000) -> Read from bank 2
+            0x76,               // HALT
+        ], 0x1B, "MBC5BANK");
+        
+        rom.resize(0x4000 * 3, 0);
+        let bank2_data = 0x55;
+        rom[2 * 0x4000] = bank2_data;
+
+        let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
+        let stats = game_boy.run_steps(5).unwrap();
+
+        assert_eq!(stats.instructions, 4);
+        assert!(stats.halted);
+        assert_eq!(game_boy.registers().a, bank2_data);
+    }
+
+    #[test]
+    fn supports_mbc5_rom_bank_zero_mapping() {
+        let mut rom = make_rom(&[
+            0x3E, 0x00,         // LD A,$00
+            0xEA, 0x00, 0x20,   // LD ($2000),A -> Set lower 8 bits of ROM bank to 0
+            0xFA, 0x00, 0x40,   // LD A,($4000) -> Read from bank 0 (at 0x4000)
+            0x76,               // HALT
+        ], 0x1B, "MBC5ZERO");
+        
+        let bank0_data = 0xAA;
+        rom[0] = bank0_data;
+
+        let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
+        let stats = game_boy.run_steps(5).unwrap();
+
+        assert_eq!(stats.instructions, 4);
+        assert!(stats.halted);
+        assert_eq!(game_boy.registers().a, bank0_data);
+    }
+
+    #[test]
+    fn supports_mbc5_ram_banking() {
+        let mut rom = make_rom(&[
+            0x3E, 0x0A,         // LD A,$0A
+            0xEA, 0x00, 0x18,   // LD ($1800),A -> Enable RAM
+            
+            0x3E, 0x00,         // LD A,$00
+            0xEA, 0x00, 0x40,   // LD ($4000),A -> Set RAM bank to 0
+            0x3E, 0x42,         // LD A,$42
+            0xEA, 0x00, 0xA0,   // LD ($A000),A -> Write 0x42 to RAM bank 0
+            
+            0x3E, 0x01,         // LD A,$01
+            0xEA, 0x00, 0x40,   // LD ($4000),A -> Set RAM bank to 1
+            0x3E, 0x99,         // LD A,$99
+            0xEA, 0x00, 0xA0,   // LD ($A000),A -> Write 0x99 to RAM bank 1
+            
+            0x3E, 0x00,         // LD A,$00
+            0xEA, 0x00, 0x40,   // LD ($4000),A -> Set RAM bank to 0
+            0xFA, 0x00, 0xA0,   // LD A,($A000) -> Read from RAM bank 0 (should be 0x42)
+            
+            0x76,               // HALT
+        ], 0x1B, "MBC5RAM");
+        
+        rom[0x0149] = 0x03; // 4 banks
+
+        let mut game_boy = GameBoy::from_rom_bytes(rom).unwrap();
+        let stats = game_boy.run_steps(30).unwrap();
+        
+        assert!(stats.halted);
+        assert_eq!(game_boy.registers().a, 0x42);
+    }
+
+    #[test]
+    fn supports_mbc3_timer_cartridge_types() {
+        // Test type 0x0F (MBC3+TIMER+BATTERY) - should load, battery=true, ram size=0
+        let rom_0f = make_rom(&[0x00], 0x0F, "TIMER_BATTERY");
+        let game_boy_0f = GameBoy::from_rom_bytes(rom_0f).unwrap();
+        assert!(game_boy_0f.has_battery());
+        assert_eq!(game_boy_0f.title(), "TIMER_BATTERY");
+
+        // Test type 0x10 (MBC3+TIMER+RAM+BATTERY) - should load, battery=true, has RAM
+        let rom_10 = make_rom(&[0x00], 0x10, "TIMER_RAM_BAT");
+        let game_boy_10 = GameBoy::from_rom_bytes(rom_10).unwrap();
+        assert!(game_boy_10.has_battery());
+        assert_eq!(game_boy_10.title(), "TIMER_RAM_BAT");
+    }
 }
+

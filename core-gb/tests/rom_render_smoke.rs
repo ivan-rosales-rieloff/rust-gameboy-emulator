@@ -13,7 +13,7 @@ fn load_rom(path: &str) -> Vec<u8> {
         .unwrap_or_else(|error| panic!("Failed to read ROM '{}': {}", path.display(), error))
 }
 
-fn framebuffer_is_not_blank(framebuffer: &[u8]) -> bool {
+fn framebuffer_is_not_blank(framebuffer: &[u32]) -> bool {
     framebuffer.iter().any(|&pixel| pixel != framebuffer[0])
 }
 

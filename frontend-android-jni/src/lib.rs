@@ -6,12 +6,6 @@ use core_gb::GameBoy;
 
 static EMULATOR: Mutex<Option<GameBoy>> = Mutex::new(None);
 
-const PALETTE: [i32; 4] = [
-    0xFFFFFFFFu32 as i32, // White
-    0xFFAAAAAAu32 as i32, // Light gray
-    0xFF555555u32 as i32, // Dark gray
-    0xFF000000u32 as i32, // Black
-];
 
 #[no_mangle]
 pub extern "system" fn Java_com_emulator_gb_EmulatorBridge_init<'local>(
@@ -59,7 +53,7 @@ pub extern "system" fn Java_com_emulator_gb_EmulatorBridge_runFrame<'local>(
         let framebuffer = gb.framebuffer();
         let mut rust_pixels = [0i32; 160 * 144];
         for (i, &val) in framebuffer.iter().enumerate() {
-            rust_pixels[i] = PALETTE[(val & 3) as usize];
+            rust_pixels[i] = val as i32;
         }
 
         if env.set_int_array_region(&pixels_out, 0, &rust_pixels).is_err() {

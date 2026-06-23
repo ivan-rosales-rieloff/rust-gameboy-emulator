@@ -10,7 +10,29 @@ use rfd::FileDialog;
 mod network;
 use network::NetworkSettings;
 
-const PALETTE: [u32; 4] = [0x00FFFFFF, 0x00AAAAAA, 0x00555555, 0x00000000];
+use core_gb::printer::{GbPrinter, PrinterImage};
+use std::sync::mpsc;
+
+fn save_printer_image(img: &PrinterImage) -> Result<(), Box<dyn std::error::Error>> {
+    let output_dir = std::path::Path::new("output");
+    if !output_dir.exists() {
+        std::fs::create_dir_all(output_dir)?;
+    }
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let path = output_dir.join(format!("print_{}.png", timestamp));
+    
+    let mut image_buf = image::ImageBuffer::new(img.width as u32, img.height as u32);
+    for (x, y, pixel) in image_buf.enumerate_pixels_mut() {
+        let luma = img.data[(y as usize) * img.width + (x as usize)];
+        *pixel = image::Luma([luma]);
+    }
+    image_buf.save(&path)?;
+    println!("Printer image saved to {}", path.display());
+    Ok(())
+}
+
 
 // Joypad button bits (active high in our representation)
 const BTN_A: u8 = 0x01;
@@ -34,6 +56,8 @@ fn main() {
         });
 
     let (width, height) = GameBoy::screen_dimensions();
+    let mut current_scale_num = 4;
+    let mut current_fast_forward = false;
     let mut window = Window::new(
         "Game Boy Emulator",
         width,
@@ -64,6 +88,9 @@ fn main() {
         });
 
     let mut buffer = vec![0u32; width * height];
+    let (printer_tx, printer_rx) = mpsc::channel::<PrinterImage>();
+    let mut printer_active = false;
+    
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         if window.is_key_pressed(Key::L, minifb::KeyRepeat::No) {
@@ -76,7 +103,11 @@ fn main() {
                 .pick_file()
             {
                 match load_rom(path) {
-                    Ok(loaded_game) => {
+                    Ok(mut loaded_game) => {
+                        if printer_active {
+                            let printer = GbPrinter::new(Some(printer_tx.clone()));
+                            loaded_game.bus.connect_link(Box::new(printer));
+                        }
                         game_boy = Some(loaded_game);
                         link_active = false;
                         network_settings.disconnect();
@@ -136,8 +167,12 @@ fn main() {
                 .pick_file()
             {
                 match GameBoy::load_state(path) {
-                    Ok(state) => {
-                        game_boy = Some(state);
+                    Ok(mut state) => {
+                        if printer_active {
+                            let printer = GbPrinter::new(Some(printer_tx.clone()));
+                            state.bus.connect_link(Box::new(printer));
+                        }
+                        game_boy = Some(Box::new(state));
                         link_active = false;
                         network_settings.disconnect();
                     }
@@ -190,6 +225,69 @@ fn main() {
             }
         }
 
+        if window.is_key_pressed(Key::P, minifb::KeyRepeat::No) {
+            printer_active = !printer_active;
+            if let Some(game) = &mut game_boy {
+                if printer_active {
+                    let printer = GbPrinter::new(Some(printer_tx.clone()));
+                    game.bus.connect_link(Box::new(printer));
+                    println!("Printer connected!");
+                } else {
+                    game.bus.disconnect_link();
+                    println!("Printer disconnected!");
+                }
+            }
+        }
+
+        // --- Fast Forward & Scale Toggling ---
+        let fast_forward = window.is_key_down(Key::F12);
+        if fast_forward != current_fast_forward {
+            current_fast_forward = fast_forward;
+            if fast_forward {
+                window.set_target_fps(0);
+            } else {
+                window.set_target_fps(60);
+            }
+        }
+
+        let mut new_scale_num = current_scale_num;
+        if window.is_key_pressed(Key::Key1, minifb::KeyRepeat::No) { new_scale_num = 1; }
+        if window.is_key_pressed(Key::Key2, minifb::KeyRepeat::No) { new_scale_num = 2; }
+        if window.is_key_pressed(Key::Key3, minifb::KeyRepeat::No) { new_scale_num = 4; }
+        if window.is_key_pressed(Key::Key4, minifb::KeyRepeat::No) { new_scale_num = 8; }
+
+        if new_scale_num != current_scale_num {
+            current_scale_num = new_scale_num;
+            let scale_val = match current_scale_num {
+                1 => Scale::X1,
+                2 => Scale::X2,
+                8 => Scale::X8,
+                _ => Scale::X4,
+            };
+            let mut new_window = Window::new(
+                "Game Boy Emulator",
+                width,
+                height,
+                WindowOptions {
+                    scale: scale_val,
+                    ..WindowOptions::default()
+                },
+            ).unwrap();
+            if fast_forward {
+                new_window.set_target_fps(0);
+            } else {
+                new_window.set_target_fps(60);
+            }
+            window = new_window;
+        }
+
+        // --- Printer checking ---
+        if let Ok(img) = printer_rx.try_recv() {
+            if let Err(e) = save_printer_image(&img) {
+                eprintln!("Failed to save printer image: {}", e);
+            }
+        }
+
         if let Some(game_boy) = &mut game_boy {
             let buttons = read_buttons(&window);
 
@@ -207,9 +305,7 @@ fn main() {
                 process::exit(1);
             }
 
-            for (pixel_index, &pixel_value) in game_boy.framebuffer().iter().enumerate() {
-                buffer[pixel_index] = PALETTE[pixel_value as usize];
-            }
+            buffer.copy_from_slice(game_boy.framebuffer());
 
             // Play audio samples
             let samples = game_boy.take_audio_samples();
@@ -247,39 +343,43 @@ fn save_current_game(game_boy: &GameBoy) {
     }
 }
 
-fn load_rom(path: PathBuf) -> Result<GameBoy, String> {
+fn load_rom(path: PathBuf) -> Result<Box<GameBoy>, String> {
     let rom_bytes = fs::read(&path)
         .map_err(|error| format!("Failed to read ROM at '{}': {error}", path.display()))?;
 
     GameBoy::from_rom_bytes(rom_bytes)
+        .map(Box::new)
         .map_err(|error| format!("Failed to initialize Game Boy core: {error}"))
 }
 
 fn read_buttons(window: &Window) -> u8 {
     let mut buttons = 0u8;
 
-    if window.is_key_pressed(Key::Z, minifb::KeyRepeat::Yes) {
+    // Use is_key_down for immediate raw key state.
+    // is_key_pressed uses OS key-repeat delay (~500ms initial),
+    // causing noticeable input lag in an emulator.
+    if window.is_key_down(Key::Z) {
         buttons |= BTN_A;
     }
-    if window.is_key_pressed(Key::X, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::X) {
         buttons |= BTN_B;
     }
-    if window.is_key_pressed(Key::Space, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Space) {
         buttons |= BTN_SELECT;
     }
-    if window.is_key_pressed(Key::Enter, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Enter) {
         buttons |= BTN_START;
     }
-    if window.is_key_pressed(Key::Right, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Right) {
         buttons |= BTN_RIGHT;
     }
-    if window.is_key_pressed(Key::Left, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Left) {
         buttons |= BTN_LEFT;
     }
-    if window.is_key_pressed(Key::Up, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Up) {
         buttons |= BTN_UP;
     }
-    if window.is_key_pressed(Key::Down, minifb::KeyRepeat::Yes) {
+    if window.is_key_down(Key::Down) {
         buttons |= BTN_DOWN;
     }
 

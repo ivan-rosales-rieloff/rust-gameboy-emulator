@@ -69,13 +69,16 @@ cargo test -p core-gb
 
 2. Compile the Rust JNI library and place it in the Android project:
    ```powershell
-   cargo ndk -t aarch64-linux-android -t x86_64-linux-android -o ./frontend-android/app/src/main/jniLibs build --release
+   $env:ANDROID_NDK_HOME="./android-sdk/ndk/25.1.8937393"; 
+   $env:ANDROID_SDK_ROOT="./android-sdk"; 
+   cargo ndk -t aarch64-linux-android -t x86_64-linux-android -o ./frontend-android/app/src/main/jniLibs build -p frontend-android-jni --release
    ```
 
 3. Open the `frontend-android` folder in Android Studio, or build the APK using the gradle wrapper:
    ```powershell
-   cd frontend-android
-   ./gradlew assembleDebug
+   $env:ANDROID_NDK_HOME="./android-sdk/ndk/25.1.8937393"; 
+   $env:ANDROID_SDK_ROOT="./android-sdk"; 
+   .\gradlew.bat assembleDebug
    ```
 
 ## Controls

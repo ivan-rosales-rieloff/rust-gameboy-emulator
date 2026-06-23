@@ -150,6 +150,18 @@ pub struct Cpu {
 }
 
 impl Cpu {
+    /// Initializes registers to GBC boot values.
+    pub fn init_cgb_registers(&mut self) {
+        self.registers.a = 0x11;
+        self.registers.f = 0x80;
+        self.registers.b = 0x00;
+        self.registers.c = 0x00;
+        self.registers.d = 0xFF;
+        self.registers.e = 0x56;
+        self.registers.h = 0x00;
+        self.registers.l = 0x0D;
+    }
+
     /// Returns the current program counter value.
     pub fn pc(&self) -> u16 {
         self.registers.pc
@@ -549,6 +561,25 @@ impl Cpu {
             // NOP - No operation (4 cycles)
             0x00 => StepResult::new(4, false),
 
+            0x10 => {
+                // STOP - 2-byte instruction (stops CPU / switches speed in GBC)
+                let _dummy = self.fetch8(bus);
+                if bus.is_cgb {
+                    if bus.key1 & 0x01 != 0 {
+                        // Toggle speed bit (bit 7) and clear prepare bit (bit 0)
+                        bus.key1 = (bus.key1 ^ 0x80) & 0x80;
+                        // Speed transition takes 20512 cycles
+                        StepResult::new(20512, false)
+                    } else {
+                        self.halted = true;
+                        StepResult::new(4, true)
+                    }
+                } else {
+                    self.halted = true;
+                    StepResult::new(4, true)
+                }
+            }
+
             0x08 => {
                 // LD (a16), SP - Load SP into address a16
                 let address = self.fetch16(bus);
@@ -605,22 +636,34 @@ impl Cpu {
                 StepResult::new(8, false)
             }
             0x27 => {
-                // DAA
-                let a = self.registers.a;
-                let mut adjust = 0;
+                // DAA - Decimal Adjust Accumulator
+                // Corrects the result of a BCD addition or subtraction.
+                // After addition (N=0): adjusts digits >9 using H/C flags AND digit values.
+                // After subtraction (N=1): adjusts using ONLY the H and C flags.
+                let mut a = self.registers.a as u16;
+                let n_flag = self.registers.f & FLAG_N != 0;
                 let mut carry = self.registers.f & FLAG_C != 0;
-                if self.registers.f & FLAG_H != 0 || (a & 0x0F) > 9 {
-                    adjust |= 0x06;
-                }
-                if carry || a > 0x99 {
-                    adjust |= 0x60;
-                    carry = true;
-                }
-                let result = if self.registers.f & FLAG_N != 0 {
-                    a.wrapping_sub(adjust)
+
+                if n_flag {
+                    // After subtraction: only use flags to determine adjustment
+                    if carry {
+                        a = a.wrapping_sub(0x60);
+                    }
+                    if self.registers.f & FLAG_H != 0 {
+                        a = a.wrapping_sub(0x06);
+                    }
                 } else {
-                    a.wrapping_add(adjust)
-                };
+                    // After addition: use both flags and digit values
+                    if carry || a > 0x99 {
+                        a = a.wrapping_add(0x60);
+                        carry = true;
+                    }
+                    if self.registers.f & FLAG_H != 0 || (a & 0x0F) > 0x09 {
+                        a = a.wrapping_add(0x06);
+                    }
+                }
+
+                let result = a as u8;
                 self.registers.a = result;
                 self.set_flag(FLAG_Z, result == 0);
                 self.set_flag(FLAG_H, false);

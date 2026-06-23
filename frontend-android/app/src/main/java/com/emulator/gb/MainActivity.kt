@@ -49,6 +49,13 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 
+
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,6 +82,7 @@ fun EmulatorScreen() {
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
+    var currentUri by remember { mutableStateOf<Uri?>(null) }
     var isRomLoaded by remember { mutableStateOf(false) }
     var isRunning by remember { mutableStateOf(false) }
     var romTitle by remember { mutableStateOf("No ROM Loaded") }
@@ -91,6 +99,7 @@ fun EmulatorScreen() {
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
+            currentUri = uri
             try {
                 context.contentResolver.openInputStream(uri)?.use { stream ->
                     val bytes = stream.readBytes()
@@ -213,46 +222,15 @@ fun EmulatorScreen() {
                     .fillMaxHeight(),
                 contentAlignment = Alignment.Center
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(130.dp)
-                        .background(Color(0xFF393E46), shape = CircleShape)
-                        .padding(6.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    // Up Button
-                    DPadButton(
-                        label = "▲",
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .size(36.dp),
-                        onPress = { isPressed -> updateInput(BTN_UP, isPressed) }
-                    )
-                    // Down Button
-                    DPadButton(
-                        label = "▼",
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .size(36.dp),
-                        onPress = { isPressed -> updateInput(BTN_DOWN, isPressed) }
-                    )
-                    // Left Button
-                    DPadButton(
-                        label = "◀",
-                        modifier = Modifier
-                            .align(Alignment.CenterStart)
-                            .size(36.dp),
-                        onPress = { isPressed -> updateInput(BTN_LEFT, isPressed) }
-                    )
-                    // Right Button
-                    DPadButton(
-                        label = "▶",
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .size(36.dp),
-                        onPress = { isPressed -> updateInput(BTN_RIGHT, isPressed) }
-                    )
-                }
+                JoystickDPad(
+                    modifier = Modifier.size(150.dp),
+                    onDirectionChange = { up, down, left, right ->
+                        updateInput(BTN_UP, up)
+                        updateInput(BTN_DOWN, down)
+                        updateInput(BTN_LEFT, left)
+                        updateInput(BTN_RIGHT, right)
+                    }
+                )
             }
 
             // Center Screen Area
@@ -271,18 +249,29 @@ fun EmulatorScreen() {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = if (romTitle.length > 20) romTitle.substring(0, 18) + "..." else romTitle,
-                        color = Color.White,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    if (statusMessage.isNotEmpty()) {
+                    Column {
                         Text(
-                            text = statusMessage,
-                            color = Color.Gray,
-                            fontSize = 11.sp
+                            text = if (romTitle.length > 20) romTitle.substring(0, 18) + "..." else romTitle,
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
                         )
+                        if (statusMessage.isNotEmpty()) {
+                            Text(
+                                text = statusMessage,
+                                color = Color.Gray,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                    Button(
+                        onClick = { romPickerLauncher.launch(arrayOf("*/*")) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00ADB5)),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                        modifier = Modifier.height(28.dp),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text("LOAD ROM", fontSize = 10.sp, color = Color.White)
                     }
                 }
 
@@ -315,14 +304,12 @@ fun EmulatorScreen() {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             CircularProgressIndicator(color = Color(0xFF00ADB5))
                             Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = { romPickerLauncher.launch(arrayOf("*/*")) },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00ADB5)),
-                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-                                modifier = Modifier.height(28.dp)
-                            ) {
-                                Text("LOAD ROM", fontSize = 11.sp, color = Color.White)
-                            }
+                            Text(
+                                text = "Please load a Game Boy ROM to begin",
+                                color = Color.LightGray,
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center
+                            )
                         }
                     }
                 }
@@ -345,7 +332,8 @@ fun EmulatorScreen() {
                     if (isRomLoaded) {
                         Button(
                             onClick = {
-                                val stateFile = File(context.filesDir, "quick_save.state").absolutePath
+                                val safeTitle = romTitle.filter { it.isLetterOrDigit() }
+                                val stateFile = File(context.filesDir, "save_${safeTitle}.state").absolutePath
                                 if (EmulatorBridge.saveState(stateFile)) {
                                     statusMessage = "Saved!"
                                 } else {
@@ -362,7 +350,8 @@ fun EmulatorScreen() {
 
                         Button(
                             onClick = {
-                                val stateFile = File(context.filesDir, "quick_save.state").absolutePath
+                                val safeTitle = romTitle.filter { it.isLetterOrDigit() }
+                                val stateFile = File(context.filesDir, "save_${safeTitle}.state").absolutePath
                                 if (File(stateFile).exists()) {
                                     if (EmulatorBridge.loadState(stateFile)) {
                                         statusMessage = "Loaded!"
@@ -380,22 +369,36 @@ fun EmulatorScreen() {
                         ) {
                             Text("LOAD", fontSize = 10.sp, color = Color.White)
                         }
-                    } else {
-                        Button(
-                            onClick = { romPickerLauncher.launch(arrayOf("*/*")) },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00ADB5)),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                            modifier = Modifier.height(26.dp),
-                            shape = RoundedCornerShape(4.dp)
-                        ) {
-                            Text("LOAD ROM", fontSize = 10.sp, color = Color.White)
-                        }
                     }
 
                     MenuButton(
                         label = "START",
                         onPress = { isPressed -> updateInput(BTN_START, isPressed) }
                     )
+
+                    if (isRomLoaded) {
+                        Button(
+                            onClick = {
+                                currentUri?.let { uri ->
+                                    try {
+                                        context.contentResolver.openInputStream(uri)?.use { stream ->
+                                            val bytes = stream.readBytes()
+                                            EmulatorBridge.init(bytes, context.filesDir.absolutePath)
+                                            statusMessage = "Game Reset!"
+                                        }
+                                    } catch (e: Exception) {
+                                        statusMessage = "Reset failed"
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD65A31)),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                            modifier = Modifier.height(26.dp),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text("RESET", fontSize = 10.sp, color = Color.White)
+                        }
+                    }
                 }
             }
 
@@ -519,46 +522,67 @@ fun EmulatorScreen() {
                 }
             }
 
-            // Emulator State Save / Load Action Row
+            // Action Row
             if (isRomLoaded) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 32.dp, vertical = 8.dp),
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
                     Button(
                         onClick = {
-                            val stateFile = File(context.filesDir, "quick_save.state").absolutePath
-                            if (EmulatorBridge.saveState(stateFile)) {
-                                statusMessage = "Quick state saved!"
-                            } else {
-                                statusMessage = "Save state failed"
+                            currentUri?.let { uri ->
+                                try {
+                                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                                        val bytes = stream.readBytes()
+                                        EmulatorBridge.init(bytes, context.filesDir.absolutePath)
+                                        statusMessage = "Game Reset!"
+                                    }
+                                } catch (e: Exception) {
+                                    statusMessage = "Reset failed"
+                                }
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF393E46)),
-                        shape = RoundedCornerShape(8.dp)
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD65A31)),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp)
                     ) {
-                        Text("Save State", color = Color.White)
+                        Text("Reset", color = Color.White, fontSize = 12.sp)
                     }
 
                     Button(
                         onClick = {
-                            val stateFile = File(context.filesDir, "quick_save.state").absolutePath
-                            if (File(stateFile).exists()) {
-                                if (EmulatorBridge.loadState(stateFile)) {
-                                    statusMessage = "Quick state loaded!"
-                                } else {
-                                    statusMessage = "Load state failed"
-                                }
+                            val safeTitle = romTitle.filter { it.isLetterOrDigit() }
+                                val stateFile = File(context.filesDir, "save_${safeTitle}.state").absolutePath
+                            if (EmulatorBridge.saveState(stateFile)) {
+                                statusMessage = "Saved!"
                             } else {
-                                statusMessage = "No save state found"
+                                statusMessage = "Save failed"
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF393E46)),
-                        shape = RoundedCornerShape(8.dp)
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp)
                     ) {
-                        Text("Load State", color = Color.White)
+                        Text("Save", color = Color.White, fontSize = 12.sp)
+                    }
+
+                    Button(
+                        onClick = {
+                            val safeTitle = romTitle.filter { it.isLetterOrDigit() }
+                                val stateFile = File(context.filesDir, "save_${safeTitle}.state").absolutePath
+                            if (File(stateFile).exists() && EmulatorBridge.loadState(stateFile)) {
+                                statusMessage = "Loaded!"
+                            } else {
+                                statusMessage = "Load failed"
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF393E46)),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp)
+                    ) {
+                        Text("Load", color = Color.White, fontSize = 12.sp)
                     }
                 }
             }
@@ -579,46 +603,15 @@ fun EmulatorScreen() {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // D-Pad
-                    Box(
-                        modifier = Modifier
-                            .size(140.dp)
-                            .background(Color(0xFF393E46), shape = CircleShape)
-                            .padding(8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        // Up Button
-                        DPadButton(
-                            label = "▲",
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .size(40.dp),
-                            onPress = { isPressed -> updateInput(BTN_UP, isPressed) }
-                        )
-                        // Down Button
-                        DPadButton(
-                            label = "▼",
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .size(40.dp),
-                            onPress = { isPressed -> updateInput(BTN_DOWN, isPressed) }
-                        )
-                        // Left Button
-                        DPadButton(
-                            label = "◀",
-                            modifier = Modifier
-                                .align(Alignment.CenterStart)
-                                .size(40.dp),
-                            onPress = { isPressed -> updateInput(BTN_LEFT, isPressed) }
-                        )
-                        // Right Button
-                        DPadButton(
-                            label = "▶",
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .size(40.dp),
-                            onPress = { isPressed -> updateInput(BTN_RIGHT, isPressed) }
-                        )
-                    }
+                    JoystickDPad(
+                        modifier = Modifier.size(160.dp),
+                        onDirectionChange = { up, down, left, right ->
+                            updateInput(BTN_UP, up)
+                            updateInput(BTN_DOWN, down)
+                            updateInput(BTN_LEFT, left)
+                            updateInput(BTN_RIGHT, right)
+                        }
+                    )
 
                     // Action Buttons: A and B
                     Row(
@@ -669,30 +662,74 @@ fun EmulatorScreen() {
     }
 }
 
+
 @Composable
-fun DPadButton(
-    label: String,
+fun JoystickDPad(
     modifier: Modifier = Modifier,
-    onPress: (Boolean) -> Unit
+    onDirectionChange: (up: Boolean, down: Boolean, left: Boolean, right: Boolean) -> Unit
 ) {
+    var thumbOffset by remember { mutableStateOf(Offset.Zero) }
+    
     Box(
         modifier = modifier
-            .background(Color(0xFF222831), shape = RoundedCornerShape(4.dp))
+            .background(Color(0xFF393E46), shape = CircleShape)
             .pointerInput(Unit) {
                 awaitPointerEventScope {
                     while (true) {
-                        awaitFirstDown(requireUnconsumed = false)
-                        onPress(true)
-                        waitForUpOrCancellation()
-                        onPress(false)
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull()
+                        if (change != null && change.pressed) {
+                            val center = Offset(size.width / 2f, size.height / 2f)
+                            val maxRadius = size.width / 2f
+                            val position = change.position
+                            
+                            val dx = position.x - center.x
+                            val dy = position.y - center.y
+                            val distance = sqrt(dx * dx + dy * dy)
+                            
+                            val angle = atan2(dy, dx)
+                            
+                            // Clamp thumbstick within the base
+                            if (distance <= maxRadius) {
+                                thumbOffset = Offset(dx, dy)
+                            } else {
+                                thumbOffset = Offset(cos(angle) * maxRadius, sin(angle) * maxRadius)
+                            }
+                            
+                            // Determine directional inputs
+                            val threshold = 0.3f // 30% of max radius to trigger
+                            val activeUp = dy < -maxRadius * threshold
+                            val activeDown = dy > maxRadius * threshold
+                            val activeLeft = dx < -maxRadius * threshold
+                            val activeRight = dx > maxRadius * threshold
+
+                            onDirectionChange(activeUp, activeDown, activeLeft, activeRight)
+                            change.consume()
+                        } else {
+                            thumbOffset = Offset.Zero
+                            onDirectionChange(false, false, false, false)
+                        }
                     }
                 }
             },
         contentAlignment = Alignment.Center
     ) {
-        Text(text = label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        // Draw the directional arrows on the base
+        Text("▲", modifier = Modifier.align(Alignment.TopCenter).padding(12.dp), color = Color(0xFFAAAAAA), fontWeight = FontWeight.Bold)
+        Text("▼", modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp), color = Color(0xFFAAAAAA), fontWeight = FontWeight.Bold)
+        Text("◀", modifier = Modifier.align(Alignment.CenterStart).padding(12.dp), color = Color(0xFFAAAAAA), fontWeight = FontWeight.Bold)
+        Text("▶", modifier = Modifier.align(Alignment.CenterEnd).padding(12.dp), color = Color(0xFFAAAAAA), fontWeight = FontWeight.Bold)
+
+        // Draw the thumbstick
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(thumbOffset.x.toInt(), thumbOffset.y.toInt()) }
+                .size(60.dp) // Size of the thumbstick
+                .background(Color(0xFF5A626E), shape = CircleShape) // Lighter thumbstick
+        )
     }
 }
+
 
 @Composable
 fun ActionButton(
